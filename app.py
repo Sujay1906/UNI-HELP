@@ -787,23 +787,54 @@ st.set_page_config(page_title="UNI HELP", page_icon="🎓", layout="wide")
 
 CUSTOM_CSS = """
 <style>
-.uh-hero {
-    background: linear-gradient(135deg, #1550ff 0%, #3b7dfb 100%);
-    padding: 3rem 2rem; border-radius: 18px; color: white; text-align: center;
-    margin-bottom: 1.5rem;
-}
-.uh-hero h1 { font-size: 2.6rem; margin-bottom: 0.2rem; }
-.uh-hero p { font-size: 1.15rem; opacity: 0.95; }
-.uh-card {
-    background: white; border: 1px solid #e6e9f0; border-radius: 14px;
-    padding: 1.2rem; box-shadow: 0 1px 4px rgba(20,30,60,0.06); margin-bottom: 0.8rem;
-}
-.uh-badge { padding: 3px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
-.uh-metric { text-align:center; padding: 0.6rem; }
-.uh-demo-banner {
-    background: #fff4e5; border: 1px solid #ffb800; color: #7a4b00;
-    padding: 0.6rem 1rem; border-radius: 10px; font-weight: 600; margin-bottom: 1rem;
-}
+:root{--navy:#071B3A;--navy2:#0D2B57;--blue:#1769FF;--blueSoft:#EAF2FF;--orange:#FF7A1A;--ink:#10213D;--muted:#61708A;--border:#DCE4F0;--bg:#F5F8FC}
+.stApp{background:radial-gradient(circle at 8% 0%,rgba(23,105,255,.06),transparent 28%),radial-gradient(circle at 92% 8%,rgba(255,122,26,.05),transparent 25%),var(--bg);color:var(--ink)}
+.block-container{max-width:1240px;padding:2rem 2rem 4rem}
+[data-testid="stHeader"]{background:rgba(245,248,252,.82)}
+[data-testid="stToolbar"]{display:none}
+h1,h2,h3,h4,h5,h6{color:var(--navy)!important;letter-spacing:-.02em}
+p,.stMarkdown{color:var(--ink)}
+small,[data-testid="stCaptionContainer"]{color:var(--muted)!important}
+section[data-testid="stSidebar"]{background:linear-gradient(180deg,var(--navy),#0A244A);border-right:1px solid rgba(255,255,255,.08)}
+section[data-testid="stSidebar"] *{color:#F7FAFF!important}
+section[data-testid="stSidebar"] button{border:1px solid rgba(255,255,255,.16)!important;background:rgba(255,255,255,.08)!important}
+section[data-testid="stSidebar"] button:hover{background:rgba(255,122,26,.2)!important;border-color:rgba(255,122,26,.55)!important}
+section[data-testid="stSidebar"] [data-testid="stRadio"] label{border-radius:12px;padding:.55rem .7rem;margin:.12rem 0}
+section[data-testid="stSidebar"] [data-testid="stRadio"] label:hover{background:rgba(255,255,255,.09)}
+.uh-hero{position:relative;overflow:hidden;background:linear-gradient(135deg,var(--navy),#114A9B 65%,var(--blue));padding:3.6rem 2.2rem;border-radius:28px;color:#fff!important;margin:0 0 1.5rem;box-shadow:0 20px 50px rgba(7,27,58,.18)}
+.uh-hero:after{content:"";position:absolute;width:280px;height:280px;border-radius:50%;right:-80px;top:-110px;background:rgba(255,122,26,.18)}
+.uh-hero h1,.uh-hero p{color:#fff!important;position:relative;z-index:1}
+.uh-hero h1{font-size:clamp(2.2rem,5vw,3.6rem);margin:0 0 .35rem}
+.uh-hero p{font-size:1.08rem;opacity:.92;max-width:720px}
+.uh-eyebrow{color:#FFB77D!important;font-size:.78rem;font-weight:800;letter-spacing:.12em;text-transform:uppercase}
+.uh-card{background:#fff;border:1px solid var(--border);border-radius:20px;padding:1.25rem;box-shadow:0 8px 24px rgba(15,38,72,.07);margin-bottom:.9rem;transition:.18s ease;color:var(--ink)!important}
+.uh-card:hover{transform:translateY(-3px);box-shadow:0 14px 34px rgba(15,38,72,.12);border-color:#B9CBE6}
+.uh-card h3{margin-top:0}
+.uh-feature-icon{width:46px;height:46px;display:grid;place-items:center;border-radius:14px;background:var(--blueSoft);font-size:1.35rem;margin-bottom:.8rem}
+.uh-page-title{margin-bottom:.15rem}.uh-page-subtitle{color:var(--muted)!important;margin-bottom:1.25rem}
+[data-testid="stMetric"]{background:#fff;border:1px solid var(--border);border-radius:18px;padding:1rem;box-shadow:0 6px 18px rgba(15,38,72,.06)}
+[data-testid="stMetricLabel"]{color:var(--muted)!important}[data-testid="stMetricValue"]{color:var(--navy)!important;font-weight:800}
+.stButton>button,.stFormSubmitButton>button{min-height:46px;border-radius:12px!important;border:1px solid #C9D5E7!important;background:#fff!important;color:var(--navy)!important;font-weight:750!important;transition:.18s ease!important;box-shadow:0 3px 10px rgba(15,38,72,.05)}
+.stButton>button:hover,.stFormSubmitButton>button:hover{border-color:var(--blue)!important;color:var(--blue)!important;transform:translateY(-1px);box-shadow:0 8px 18px rgba(23,105,255,.13)}
+.stButton>button[kind="primary"],.stFormSubmitButton>button[kind="primary"]{background:var(--blue)!important;color:#fff!important;border-color:var(--blue)!important}
+[data-baseweb="input"],[data-baseweb="textarea"],[data-baseweb="select"]>div{background:#fff!important;border:1px solid #C9D5E7!important;border-radius:12px!important;color:var(--ink)!important}
+input,textarea{color:var(--ink)!important}
+[data-baseweb="input"]:focus-within,[data-baseweb="textarea"]:focus-within{border-color:var(--blue)!important;box-shadow:0 0 0 3px rgba(23,105,255,.1)!important}
+label{color:var(--navy)!important;font-weight:650!important}
+.stForm{background:rgba(255,255,255,.72);border:1px solid var(--border);border-radius:20px;padding:1rem 1.15rem}
+.stTabs [data-baseweb="tab-list"]{gap:.35rem;border-bottom:1px solid var(--border)}
+.stTabs [data-baseweb="tab"]{color:var(--muted)!important;font-weight:700;border-radius:10px 10px 0 0}
+.stTabs [aria-selected="true"]{color:var(--blue)!important}
+div[data-testid="stVerticalBlockBorderWrapper"]{border-color:var(--border)!important;border-radius:18px!important;box-shadow:0 5px 16px rgba(15,38,72,.05)}
+[data-testid="stAlert"]{border-radius:14px!important}
+.uh-demo-banner{display:inline-flex;background:rgba(255,122,26,.09);border:1px solid rgba(255,122,26,.28);color:#8A430D!important;padding:.42rem .75rem;border-radius:999px;font-size:.78rem;font-weight:750;margin:0 0 1rem}
+.uh-demo-banner *{color:#8A430D!important}
+.uh-empty{text-align:center;padding:2.2rem 1rem;background:#fff;border:1px dashed #C9D5E7;border-radius:20px}
+.uh-empty-icon{font-size:2rem}.uh-empty h4{margin:.2rem 0}.uh-empty p{color:var(--muted)!important;margin:0}
+.uh-badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:.76rem;font-weight:800}
+@keyframes uh-pop{0%{transform:scale(.96);opacity:.2}60%{transform:scale(1.02);opacity:1}100%{transform:scale(1);opacity:1}}
+[data-testid="stAlert"][kind="success"]{animation:uh-pop .32s ease-out}
+@media(max-width:768px){.block-container{padding:1rem .8rem 3rem}.uh-hero{padding:2rem 1.2rem;border-radius:22px}.uh-hero h1{font-size:2.25rem}.uh-card{padding:1rem;border-radius:16px}[data-testid="stMetric"]{padding:.75rem}.stButton>button,.stFormSubmitButton>button{min-height:50px}}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -818,8 +849,8 @@ if "nav" not in st.session_state:
     st.session_state["nav"] = "Dashboard"
 
 if not EMAIL_CONFIGURED:
-    st.markdown('<div class="uh-demo-banner">🧪 DEMO MODE — Email (SMTP) is not configured. '
-                'OTPs will be displayed on-screen instead of emailed.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="uh-demo-banner">🧪 Demo mode · verification codes are shown in-app</div>',
+                unsafe_allow_html=True)
 
 
 def status_badge(status):
@@ -851,51 +882,38 @@ def render_landing():
     st.markdown(
         """
         <div class="uh-hero">
+            <div class="uh-eyebrow">Verified campus community</div>
             <h1>🎓 UNI HELP</h1>
-            <p>"Your campus. Your community. Someone can help."</p>
-            <p style="font-size:1rem; margin-top:0.8rem;">Borrow, deliver, assist and earn —
-            inside a trusted university network.</p>
+            <p>Your campus. Your community. Someone can help.</p>
+            <p>Borrow, deliver, assist and earn — all inside one trusted university network.</p>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """, unsafe_allow_html=True
     )
-
-    c1, c2, c3 = st.columns(3)
+    features = [
+        ("📦","Delivery","Request or deliver items across campus with secure OTP, QR and location-aware handovers."),
+        ("🤝","Borrowing","Share useful campus items like chargers, books, calculators and equipment."),
+        ("🛠️","Micro-Tasks","Post quick campus errands and earn by helping verified students."),
+        ("💳","Wallet","Track prototype earnings, UniCoins and transaction history in one place."),
+        ("🛡️","Trust","Build reputation through verified handovers, ratings and transparent trust scoring."),
+        ("🔔","Notifications","Stay on top of requests, verification updates and platform activity."),
+    ]
+    cols=st.columns(3)
+    for i,(icon,title,desc) in enumerate(features):
+        with cols[i%3]:
+            st.markdown(f'<div class="uh-card"><div class="uh-feature-icon">{icon}</div><h3>{title}</h3><p>{desc}</p></div>',unsafe_allow_html=True)
+    st.markdown("### Built for student life")
+    st.markdown('<div class="uh-card"><b>🔐 Verified students</b> · <b>📱 OTP + QR</b> · <b>📍 Location-aware</b> · <b>⭐ Trust & ratings</b> · <b>🪙 UniCoins</b></div>',unsafe_allow_html=True)
+    c1,c2=st.columns(2)
     with c1:
-        st.markdown('<div class="uh-card"><h3>📦 Delivery</h3>Request or deliver items across campus with OTP + QR verified handovers.</div>', unsafe_allow_html=True)
+        if st.button("🚀 Get Started",use_container_width=True,type="primary"):
+            st.session_state["auth_mode"]="Register"; st.rerun()
     with c2:
-        st.markdown('<div class="uh-card"><h3>🤝 Borrowing</h3>Lend and borrow calculators, chargers, books, tools and more — securely.</div>', unsafe_allow_html=True)
-    with c3:
-        st.markdown('<div class="uh-card"><h3>🛠 Micro-Tasks</h3>Post small campus errands and get them done by a verified peer.</div>', unsafe_allow_html=True)
-
-    c4, c5, c6, c7 = st.columns(4)
-    for col, text in zip((c4, c5, c6, c7),
-                         ["🔐 Verified Students", "📱 OTP + QR", "📍 Location-aware Handover", "⭐ Trust & Reputation"]):
-        col.markdown(f'<div class="uh-card" style="text-align:center;">{text}</div>', unsafe_allow_html=True)
-
-    st.info("**UNI HELP is a verified university micro-service network** — not just a courier app. "
-            "It combines a verified student community, a borrowing marketplace, micro-tasks, delivery, "
-            "and secure OTP + QR + location-based handovers, all backed by trust scores and UniCoins.")
-
-    colA, colB = st.columns(2)
-    with colA:
-        if st.button("🚀 Get Started", use_container_width=True):
-            st.session_state["auth_mode"] = "Register"
-            st.rerun()
-    with colB:
-        if st.button("🔑 I already have an account — Login", use_container_width=True):
-            st.session_state["auth_mode"] = "Login"
-            st.rerun()
-
-    with st.expander("🧪 Demo tools (for evaluators / hackathon judges)"):
-        st.write(f"Load sample students, delivery requests, borrow items, tasks and UniCoins into the database.")
-        if st.button("📥 LOAD DEMO DATA"):
-            seed_demo_data()
-            st.success("Demo data loaded. Demo accounts (password: `demo1234`):")
-            for full_name, local, *_ in DEMO_STUDENTS:
-                st.code(f"{full_name}: {local}{UNIVERSITY_EMAIL_DOMAIN}")
-        st.caption(f"Admin login: `{ADMIN_EMAIL}` / `{ADMIN_PASSWORD}`")
-
+        if st.button("🔑 I already have an account",use_container_width=True):
+            st.session_state["auth_mode"]="Login"; st.rerun()
+    with st.expander("🧪 Demo access"):
+        st.caption("For evaluators: load sample students, delivery requests, borrow items, tasks and UniCoins.")
+        if st.button("Load demo data",use_container_width=True):
+            seed_demo_data(); st.success("Demo data is ready."); st.caption("Demo accounts use password: demo1234")
 
 def render_register():
     st.subheader("Create your UNI HELP account")
@@ -994,67 +1012,41 @@ def render_login():
 # -----------------------------------------------------------------------------
 
 def render_dashboard(user):
-    st.markdown(f"## Welcome, {user['full_name']} 👋")
-    if not user["verified"]:
-        st.warning("Your email isn't verified yet. Some actions may be limited. "
-                   "Go to the sidebar → Verify Email.")
-
-    conn = get_conn()
-    completed_deliveries = conn.execute(
-        "SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (user["id"],)
-    ).fetchone()["c"]
-    active_borrow = conn.execute(
-        "SELECT COUNT(*) c FROM borrowings WHERE borrower_id=? AND status NOT IN ('COMPLETED','REJECTED','CANCELLED')",
-        (user["id"],),
-    ).fetchone()["c"]
-    earnings = conn.execute(
-        "SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (user["id"],)
-    ).fetchone()["s"]
+    st.markdown(f'<div class="uh-page-title"><h1>Welcome back, {user["full_name"].split()[0]} 👋</h1></div>',unsafe_allow_html=True)
+    st.markdown('<div class="uh-page-subtitle">Here’s your campus activity at a glance.</div>',unsafe_allow_html=True)
+    if not user["verified"]: st.warning("Verify your university email to unlock all features.")
+    conn=get_conn()
+    completed_deliveries=conn.execute("SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'",(user["id"],)).fetchone()["c"]
+    active_borrow=conn.execute("SELECT COUNT(*) c FROM borrowings WHERE borrower_id=? AND status NOT IN ('COMPLETED','REJECTED','CANCELLED')",(user["id"],)).fetchone()["c"]
+    earnings=conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'",(user["id"],)).fetchone()["s"]
     conn.close()
-
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Trust Score", f"{user['trust_score']}/100")
-    avg_rating = round(user["rating_sum"] / user["rating_count"], 1) if user["rating_count"] else 0
-    m2.metric("Rating", f"⭐ {avg_rating}" if user["rating_count"] else "No ratings yet")
-    m3.metric("Tasks Completed", completed_deliveries)
-    m4.metric("Active Borrowings", active_borrow)
-    m5.metric("Earnings (prototype)", f"₹{earnings:.0f}")
-    m6.metric("UniCoins", f"🪙 {user['unicoins']}")
-
-    st.markdown("#### Quick actions")
-    c1, c2, c3, c4 = st.columns(4)
-    if c1.button("📦 Delivery", use_container_width=True):
-        st.session_state["nav"] = "Delivery"; st.rerun()
-    if c2.button("🤝 Borrow", use_container_width=True):
-        st.session_state["nav"] = "Borrowing"; st.rerun()
-    if c3.button("🛠 Micro Task", use_container_width=True):
-        st.session_state["nav"] = "Micro-Tasks"; st.rerun()
-    if c4.button("💰 Wallet / Earn", use_container_width=True):
-        st.session_state["nav"] = "Wallet"; st.rerun()
-
-    st.divider()
-    colL, colR = st.columns(2)
+    avg_rating=round(user["rating_sum"]/user["rating_count"],1) if user["rating_count"] else 0
+    metrics=[("Trust Score",f'{user["trust_score"]}/100'),("Rating",f'⭐ {avg_rating}' if user["rating_count"] else "—"),("Completed",completed_deliveries),("Borrowings",active_borrow),("Earnings",f'₹{earnings:.0f}'),("UniCoins",f'🪙 {user["unicoins"]}')]
+    m=st.columns(6)
+    for col,(label,value) in zip(m,metrics): col.metric(label,value)
+    st.markdown("### Quick actions")
+    actions=[("📦","Delivery","Send or carry something across campus."),("🤝","Borrowing","Lend or request useful items."),("🛠️","Micro-Tasks","Post or complete small campus tasks."),("💰","Wallet","View earnings and UniCoins.")]
+    cols=st.columns(4)
+    for col,(icon,label,desc) in zip(cols,actions):
+        with col:
+            st.markdown(f'<div class="uh-card"><div class="uh-feature-icon">{icon}</div><h3>{label}</h3><p>{desc}</p></div>',unsafe_allow_html=True)
+            if st.button(f"Open {label}",key=f"dash_{label}",use_container_width=True):
+                st.session_state["nav"]=label; st.rerun()
+    colL,colR=st.columns(2)
     with colL:
-        st.markdown("#### 📨 Recent notifications")
-        notifs = get_notifications(user["id"], limit=6)
-        if not notifs:
-            st.caption("No notifications yet.")
+        st.markdown("### 🔔 Recent notifications")
+        notifs=get_notifications(user["id"],limit=6)
+        if not notifs: st.markdown('<div class="uh-empty"><div class="uh-empty-icon">🔔</div><h4>All caught up</h4><p>No new notifications yet.</p></div>',unsafe_allow_html=True)
         for n in notifs:
-            prefix = "🔵 " if not n["is_read"] else ""
-            st.markdown(f"- {prefix}{n['message']}  \n  <small>{n['created_at'][:19].replace('T',' ')}</small>", unsafe_allow_html=True)
-
+            prefix="🔵 " if not n["is_read"] else ""
+            st.markdown(f'<div class="uh-card"><b>{prefix}{n["message"]}</b><br><small>{n["created_at"][:19].replace("T"," ")}</small></div>',unsafe_allow_html=True)
     with colR:
-        st.markdown("#### 📦 Your active delivery requests")
-        conn = get_conn()
-        active = conn.execute(
-            "SELECT * FROM requests WHERE requester_id=? AND status NOT IN ('COMPLETED','CANCELLED') ORDER BY id DESC",
-            (user["id"],),
-        ).fetchall()
+        st.markdown("### 📦 Active delivery requests")
+        conn=get_conn()
+        active=conn.execute("SELECT * FROM requests WHERE requester_id=? AND status NOT IN ('COMPLETED','CANCELLED') ORDER BY id DESC",(user["id"],)).fetchall()
         conn.close()
-        if not active:
-            st.caption("No active requests.")
-        for r in active:
-            st.markdown(f"**{r['item_name']}** — {status_badge(r['status'])}", unsafe_allow_html=True)
+        if not active: st.markdown('<div class="uh-empty"><div class="uh-empty-icon">✨</div><h4>No active requests</h4><p>Your campus board is clear.</p></div>',unsafe_allow_html=True)
+        for r in active: st.markdown(f'<div class="uh-card"><b>{r["item_name"]}</b> {status_badge(r["status"])}<br><small>📍 {r["pickup_location"]} → {r["destination"]}</small></div>',unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
@@ -1906,37 +1898,32 @@ def render_admin(user):
 # =============================================================================
 
 def render_sidebar(user):
-    st.sidebar.markdown("### 🎓 UNI HELP")
-    st.sidebar.write(f"**{user['full_name']}**")
-    st.sidebar.caption(user["email"])
-    if not user["verified"]:
-        st.sidebar.warning("Email not verified")
-
-    unread = len(get_notifications(user["id"], unread_only=True))
-    options = ["Dashboard", "Delivery", "Borrowing", "Micro-Tasks",
-               f"Notifications ({unread})" if unread else "Notifications",
-               "Wallet", "Disputes"]
-    if user["role"] == "admin":
-        options.append("Admin")
-
-    clean_map = {opt: opt.split(" (")[0] for opt in options}
-    current_clean = st.session_state.get("nav", "Dashboard")
-    display_current = next((o for o in options if clean_map[o] == current_clean), options[0])
-
-    choice = st.sidebar.radio("Navigate", options, index=options.index(display_current))
-    st.session_state["nav"] = clean_map[choice]
-
-    st.sidebar.divider()
-    if not user["verified"]:
-        if st.sidebar.button("📧 Verify Email"):
-            st.session_state["pending_verify_email"] = user["email"]
-            st.session_state["user"] = None
-            st.session_state["auth_mode"] = "Verify"
-            st.rerun()
-    if st.sidebar.button("🚪 Logout"):
-        st.session_state["user"] = None
-        st.session_state["auth_mode"] = "Home"
-        st.rerun()
+    if user["role"]=="admin":
+        st.sidebar.markdown("## 🛡️ UNI HELP")
+        st.sidebar.caption("Platform administration")
+        st.sidebar.markdown("---")
+        st.sidebar.radio("Admin navigation",["Admin Dashboard"])
+        st.session_state["nav"]="Admin"
+        st.sidebar.markdown("---")
+        st.sidebar.caption("Users · requests · disputes · reports · verification")
+        if st.sidebar.button("🚪 Logout",use_container_width=True):
+            st.session_state["user"]=None; st.session_state["auth_mode"]="Home"; st.rerun()
+        return
+    st.sidebar.markdown("## 🎓 UNI HELP")
+    st.sidebar.caption(f'{user["full_name"]} · {user["email"]}')
+    if not user["verified"]: st.sidebar.warning("Email verification required")
+    unread=len(get_notifications(user["id"],unread_only=True))
+    options=["Dashboard","Delivery","Borrowing","Micro-Tasks",f"Notifications ({unread})" if unread else "Notifications","Wallet","Disputes"]
+    clean_map={opt:opt.split(" (")[0] for opt in options}
+    current_clean=st.session_state.get("nav","Dashboard")
+    display_current=next((o for o in options if clean_map[o]==current_clean),options[0])
+    choice=st.sidebar.radio("Navigate",options,index=options.index(display_current))
+    st.session_state["nav"]=clean_map[choice]
+    st.sidebar.markdown("---")
+    if not user["verified"] and st.sidebar.button("📧 Verify Email",use_container_width=True):
+        st.session_state["pending_verify_email"]=user["email"]; st.session_state["user"]=None; st.session_state["auth_mode"]="Verify"; st.rerun()
+    if st.sidebar.button("🚪 Logout",use_container_width=True):
+        st.session_state["user"]=None; st.session_state["auth_mode"]="Home"; st.rerun()
 
 
 def main():
@@ -1959,6 +1946,9 @@ def main():
     render_sidebar(user)
 
     nav = st.session_state.get("nav", "Dashboard")
+    if user["role"] == "admin":
+        nav = "Admin"
+        st.session_state["nav"] = "Admin"
     if nav == "Dashboard":
         render_dashboard(user)
     elif nav == "Delivery":
