@@ -16,9 +16,6 @@ import math
 import io
 import time
 import re
-import urllib.request
-import urllib.parse
-import base64
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
@@ -26,6 +23,13 @@ import streamlit as st
 from werkzeug.security import generate_password_hash, check_password_hash
 import qrcode
 from dotenv import load_dotenv
+
+try:
+    from twilio.rest import Client as TwilioClient
+    TWILIO_SDK_AVAILABLE = True
+except ImportError:
+    TwilioClient = None
+    TWILIO_SDK_AVAILABLE = False
 
 # =============================================================================
 # 0. CONFIG / ENVIRONMENT
@@ -64,12 +68,17 @@ EMAIL_CONFIGURED = bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSW
 try:
     TWILIO_ACCOUNT_SID = str(st.secrets.get("TWILIO_ACCOUNT_SID", "")).strip()
     TWILIO_AUTH_TOKEN = str(st.secrets.get("TWILIO_AUTH_TOKEN", "")).strip()
-    TWILIO_FROM_NUMBER = str(st.secrets.get("TWILIO_FROM_NUMBER", "")).strip()
+    TWILIO_VERIFY_SERVICE_SID = str(st.secrets.get("TWILIO_VERIFY_SERVICE_SID", "")).strip()
 except Exception:
     TWILIO_ACCOUNT_SID = ""
     TWILIO_AUTH_TOKEN = ""
-    TWILIO_FROM_NUMBER = ""
-SMS_CONFIGURED = bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER)
+    TWILIO_VERIFY_SERVICE_SID = ""
+SMS_CONFIGURED = bool(
+    TWILIO_SDK_AVAILABLE
+    and TWILIO_ACCOUNT_SID
+    and TWILIO_AUTH_TOKEN
+    and TWILIO_VERIFY_SERVICE_SID
+)
 SMS_RESEND_SECONDS = 30
 
 MIN_REWARD = float(os.getenv("MIN_REWARD", "0"))
@@ -689,26 +698,67 @@ def normalize_phone(phone):
 def is_valid_phone(phone): return bool(normalize_phone(phone))
 
 
-def send_sms(to_phone, message):
-    if not SMS_CONFIGURED: return False
+def _twilio_verify_client():
+    """Return the configured Twilio Verify client without exposing secrets."""
+    if not SMS_CONFIGURED:
+        return None
+    return TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+
+def send_twilio_verify_sms(to_phone):
+    """Start a real Twilio Verify SMS verification. No OTP is generated or stored locally."""
+    if not SMS_CONFIGURED:
+        st.session_state["_last_sms_error"] = "Twilio Verify is not configured."
+        return False
+    phone = normalize_phone(to_phone)
+    if not phone:
+        st.session_state["_last_sms_error"] = "Invalid phone number."
+        return False
     try:
-        url=f"https://api.twilio.com/2010-04-01/Accounts/{urllib.parse.quote(TWILIO_ACCOUNT_SID, safe='')}/Messages.json"
-        data=urllib.parse.urlencode({"From":TWILIO_FROM_NUMBER,"To":to_phone,"Body":message}).encode()
-        req=urllib.request.Request(url,data=data,method="POST")
-        req.add_header("Authorization","Basic "+base64.b64encode(f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()).decode())
-        req.add_header("Content-Type","application/x-www-form-urlencoded")
-        with urllib.request.urlopen(req,timeout=20) as response: return 200 <= response.status < 300
+        client = _twilio_verify_client()
+        verification = (
+            client.verify.v2
+            .services(TWILIO_VERIFY_SERVICE_SID)
+            .verifications.create(to=phone, channel="sms")
+        )
+        return getattr(verification, "status", "") in {"pending", "approved"}
     except Exception as exc:
-        st.session_state["_last_sms_error"]=str(exc); return False
+        # Keep provider details server-side; never surface credentials or raw API responses.
+        st.session_state["_last_sms_error"] = str(exc)
+        return False
 
 
-def deliver_sms_otp(user_row,purpose,reference_id=None,context_label="verification"):
-    otp_plain=create_otp(user_row["id"],purpose,reference_id)
-    message=f"UNI HELP: Your {context_label} code is {otp_plain}. It expires in {OTP_EXPIRY_MINUTES} minutes. Do not share this code."
-    sent=send_sms(normalize_phone(user_row["phone"] or ""),message)
-    if not sent:
-        conn=get_conn(); conn.execute("UPDATE otp_records SET used=1 WHERE user_id=? AND purpose=? AND (reference_id=? OR (reference_id IS NULL AND ? IS NULL)) AND used=0",(user_row["id"],purpose,reference_id,reference_id)); conn.commit(); conn.close()
-    return sent
+def verify_twilio_sms(to_phone, code):
+    """Check a user-entered code against Twilio Verify."""
+    if not SMS_CONFIGURED:
+        return False, "SMS verification is not configured. Please contact the administrator."
+    phone = normalize_phone(to_phone)
+    code = str(code or "").strip()
+    if not phone:
+        return False, "No valid mobile number is registered."
+    if not re.fullmatch(r"\d{6}", code):
+        return False, "Please enter the 6-digit OTP."
+    try:
+        client = _twilio_verify_client()
+        check = (
+            client.verify.v2
+            .services(TWILIO_VERIFY_SERVICE_SID)
+            .verification_checks.create(to=phone, code=code)
+        )
+        status = getattr(check, "status", "")
+        if status == "approved":
+            return True, "Verified successfully."
+        if status == "pending":
+            return False, "Invalid OTP. Please try again."
+        return False, "OTP verification failed. Please request a new OTP."
+    except Exception as exc:
+        st.session_state["_last_sms_error"] = str(exc)
+        return False, "Unable to verify OTP. Please try again."
+
+
+def deliver_sms_otp(user_row, purpose, reference_id=None, context_label="verification"):
+    """Start a Twilio Verify SMS challenge. Twilio owns OTP generation, expiry and verification."""
+    return send_twilio_verify_sms(user_row.get("phone") or "")
 
 
 def register_user(full_name,email,phone,student_id,password):
@@ -838,310 +888,37 @@ st.set_page_config(page_title="UNI HELP", page_icon="🎓", layout="wide")
 
 CUSTOM_CSS = """
 <style>
-/* ------------------------------------------------------------------
-   UNI HELP — authentication-only visual layer
-   Scoped to .uh-auth-* so the logged-in application UI is untouched.
-   ------------------------------------------------------------------ */
-:root {
-    --uh-navy: #0b1f3a;
-    --uh-navy-2: #102d52;
-    --uh-blue: #2563eb;
-    --uh-blue-2: #3b82f6;
-    --uh-orange: #f97316;
-    --uh-bg: #f7f9fc;
-    --uh-muted: #64748b;
-    --uh-border: #e2e8f0;
-}
-
-/* Light, app-like background for auth screens */
-.stApp:has(.uh-auth-shell) {
-    background: var(--uh-bg);
-}
-
-.uh-auth-shell {
-    min-height: calc(100vh - 3rem);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 2rem 1rem 3rem;
-    position: relative;
-    overflow: hidden;
-}
-
-.uh-auth-shell::before,
-.uh-auth-shell::after {
-    content: "";
-    position: absolute;
-    border-radius: 999px;
-    pointer-events: none;
-    filter: blur(2px);
-}
-
-.uh-auth-shell::before {
-    width: 360px;
-    height: 360px;
-    top: -180px;
-    right: -140px;
-    background: radial-gradient(circle, rgba(37,99,235,.10), transparent 68%);
-}
-
-.uh-auth-shell::after {
-    width: 300px;
-    height: 300px;
-    bottom: -170px;
-    left: -130px;
-    background: radial-gradient(circle, rgba(249,115,22,.09), transparent 68%);
-}
-
-.uh-auth-content {
-    width: min(100%, 470px);
-    position: relative;
-    z-index: 1;
-}
-
-.uh-auth-hero {
-    text-align: center;
-    margin: 0 auto 1.35rem;
-    animation: uh-fade-up .55s ease both;
-}
-
-.uh-auth-logo-mark {
-    width: 62px;
-    height: 62px;
-    margin: 0 auto .65rem;
-    border-radius: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: linear-gradient(145deg, #eaf2ff, #ffffff);
-    border: 1px solid #dbe7fb;
-    box-shadow: 0 12px 30px rgba(11,31,58,.10);
-    font-size: 2rem;
-    animation: uh-float-in .65s ease both;
-}
-
-.uh-auth-hero h1 {
-    color: var(--uh-navy) !important;
-    font-size: clamp(2rem, 6vw, 2.65rem) !important;
-    line-height: 1.05;
-    letter-spacing: -.045em;
-    margin: 0 !important;
-    font-weight: 800;
-}
-
-.uh-auth-tagline {
-    color: var(--uh-navy-2) !important;
-    font-size: 1.03rem;
-    line-height: 1.45;
-    margin: .65rem 0 .3rem;
-    font-weight: 600;
-}
-
-.uh-auth-subtitle {
-    color: var(--uh-muted) !important;
-    font-size: .86rem;
-    margin: 0;
-    letter-spacing: .02em;
-}
-
-.uh-auth-card {
-    background: rgba(255,255,255,.96);
-    border: 1px solid rgba(226,232,240,.95);
-    border-radius: 24px;
-    padding: 1.55rem;
-    box-shadow: 0 20px 55px rgba(11,31,58,.10), 0 2px 8px rgba(11,31,58,.04);
-    animation: uh-card-in .6s .08s ease both;
-    backdrop-filter: blur(8px);
-}
-
-.uh-auth-card h2 {
-    color: var(--uh-navy) !important;
-    font-size: 1.35rem !important;
-    margin: 0 0 .2rem !important;
-    font-weight: 750;
-}
-
-.uh-auth-card p,
-.uh-auth-card .uh-auth-card-copy {
-    color: #475569 !important;
-}
-
-.uh-auth-card-copy {
-    font-size: .9rem;
-    margin: 0 0 1.15rem;
-}
-
-.uh-auth-demo {
-    margin: .8rem 0 0;
-    padding: .55rem .75rem;
-    border-radius: 12px;
-    background: #fff7ed;
-    border: 1px solid #fed7aa;
-    color: #9a3412 !important;
-    font-size: .76rem;
-    text-align: center;
-}
-
-.uh-auth-divider {
-    display: flex;
-    align-items: center;
-    gap: .65rem;
-    color: #94a3b8;
-    font-size: .75rem;
-    margin: .8rem 0;
-}
-.uh-auth-divider::before,
-.uh-auth-divider::after {
-    content: "";
-    height: 1px;
-    flex: 1;
-    background: #e2e8f0;
-}
-
-.uh-auth-footnote {
-    text-align: center;
-    color: #64748b !important;
-    font-size: .82rem;
-    margin-top: 1rem;
-}
-
-.uh-auth-link {
-    color: var(--uh-blue) !important;
-    font-weight: 700;
-}
-
-/* Streamlit widgets inside the auth card */
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label,
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label p,
-.stApp:has(.uh-auth-shell) div[data-testid="stNumberInput"] label,
-.stApp:has(.uh-auth-shell) div[data-testid="stNumberInput"] label p {
-    color: #334155 !important;
-    font-weight: 650 !important;
-    font-size: .82rem !important;
-}
-
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input,
-.stApp:has(.uh-auth-shell) div[data-testid="stNumberInput"] input {
-    border: 1px solid #cbd5e1 !important;
-    border-radius: 12px !important;
-    background: #fff !important;
-    color: #0f172a !important;
-    min-height: 46px !important;
-    box-shadow: none !important;
-}
-
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input:focus,
-.stApp:has(.uh-auth-shell) div[data-testid="stNumberInput"] input:focus {
-    border-color: var(--uh-blue) !important;
-    box-shadow: 0 0 0 3px rgba(37,99,235,.12) !important;
-}
-
-.stApp:has(.uh-auth-shell) button {
-    border-radius: 12px !important;
-    min-height: 46px !important;
-    font-weight: 700 !important;
-    transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease !important;
-}
-
-.stApp:has(.uh-auth-shell) button:hover {
-    transform: translateY(-1px);
-}
-
-.stApp:has(.uh-auth-shell) button[kind="primary"] {
-    background: linear-gradient(135deg, var(--uh-blue), var(--uh-blue-2)) !important;
-    color: #fff !important;
-    border: 0 !important;
-    box-shadow: 0 8px 18px rgba(37,99,235,.20) !important;
-}
-
-.uh-auth-primary button,
-.uh-auth-primary button[kind="primary"] {
-    background: linear-gradient(135deg, var(--uh-blue), var(--uh-blue-2)) !important;
-    color: #fff !important;
-    border: 0 !important;
-    box-shadow: 0 8px 18px rgba(37,99,235,.20) !important;
-}
-
-.uh-auth-secondary button {
-    background: #fff !important;
-    color: var(--uh-navy) !important;
-    border: 1px solid #cbd5e1 !important;
-}
-
-.uh-auth-secondary button:hover {
-    border-color: #93c5fd !important;
-    box-shadow: 0 6px 16px rgba(11,31,58,.07) !important;
-}
-
-.uh-auth-create button {
-    background: transparent !important;
-    color: var(--uh-blue) !important;
-    border: 0 !important;
-    box-shadow: none !important;
-}
-
-.uh-auth-back button {
-    background: transparent !important;
-    color: #64748b !important;
-    border: 0 !important;
-    box-shadow: none !important;
-}
-
-.uh-auth-error {
-    border-radius: 12px;
-}
-
-.uh-auth-tabs { display:grid; grid-template-columns:1fr 1fr; gap:.25rem; background:#f1f5f9; border-radius:12px; padding:.25rem; margin-bottom:1rem; text-align:center; font-size:.75rem; font-weight:800; color:#64748b; }
-.uh-auth-tabs span { padding:.58rem .4rem; border-radius:9px; }
-.uh-auth-tabs .uh-tab-active { background:#fff; color:#0b1f3a; box-shadow:0 2px 8px rgba(11,31,58,.10); }
-
-.uh-otp-note {
-    text-align: center;
-    padding: .7rem .8rem;
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
-    color: #1e40af !important;
-    border-radius: 12px;
-    font-size: .82rem;
-    margin-bottom: 1rem;
-}
-
-@keyframes uh-fade-up {
-    from { opacity: 0; transform: translateY(10px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-@keyframes uh-card-in {
-    from { opacity: 0; transform: translateY(14px) scale(.99); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
-}
-@keyframes uh-float-in {
-    from { opacity: 0; transform: translateY(7px) scale(.96); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-@media (max-width: 640px) {
-    .uh-auth-shell { min-height: calc(100dvh - 1rem); padding: .55rem .5rem .75rem; align-items: center; }
-    .uh-auth-content { width: 100%; padding-top: 0; }
-    .uh-auth-hero { margin-bottom: .65rem; }
-    .uh-auth-card { padding: .95rem; border-radius: 18px; }
-    .uh-auth-logo-mark { width: 50px; height: 50px; border-radius: 16px; font-size: 1.55rem; margin-bottom: .35rem; }
-    .uh-auth-hero h1 { font-size: 1.95rem !important; }
-    .uh-auth-tagline { font-size: .9rem; margin-top: .4rem; }
-    .uh-auth-subtitle { font-size: .74rem; }
-    .uh-auth-card h2 { font-size: 1.15rem !important; }
-    .uh-auth-card-copy { font-size: .8rem; margin-bottom: .75rem; }
-    .stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input { min-height: 43px !important; }
-    .stApp:has(.uh-auth-shell) button { min-height: 43px !important; }
-}
-
-@media (min-width: 641px) and (max-height: 820px) {
-    .uh-auth-shell { min-height: calc(100vh - 1rem); padding: .6rem 1rem; }
-    .uh-auth-hero { margin-bottom: .65rem; }
-    .uh-auth-logo-mark { width: 52px; height: 52px; font-size: 1.65rem; }
-    .uh-auth-hero h1 { font-size: 2rem !important; }
-    .uh-auth-tagline { font-size: .9rem; margin: .4rem 0 .2rem; }
-    .uh-auth-card { padding: 1rem; }
-}
+:root{--uh-navy:#0b1736;--uh-blue:#2563eb;--uh-blue2:#4f7cff;--uh-orange:#f97316;--uh-bg:#f5f8fc;--uh-text:#10203f;--uh-muted:#64748b;--uh-line:#dbe4f0}
+.stApp:has(.uh-auth-shell){background:radial-gradient(circle at 12% 8%,rgba(37,99,235,.08),transparent 28%),radial-gradient(circle at 88% 92%,rgba(249,115,22,.07),transparent 24%),var(--uh-bg)}
+.uh-auth-shell{min-height:calc(100dvh - 1.2rem);display:flex;align-items:center;justify-content:center;padding:.55rem 1rem;box-sizing:border-box;overflow:hidden}
+.uh-auth-content{width:min(100%,440px);margin:auto}
+.uh-auth-hero{text-align:center;margin:0 auto .75rem;animation:uhFade .42s ease both}
+.uh-auth-logo-mark{width:48px;height:48px;margin:0 auto .35rem;border-radius:15px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#e8f0ff,#fff);border:1px solid #d7e3f5;box-shadow:0 10px 24px rgba(11,23,54,.09);font-size:1.45rem;animation:uhLogo .5s ease both}
+.uh-auth-hero h1{color:var(--uh-navy)!important;font-size:2.15rem!important;line-height:1;margin:0!important;letter-spacing:-.055em;font-weight:850}
+.uh-auth-tagline{color:#203454!important;font-size:.94rem;line-height:1.32;margin:.38rem 0 .18rem;font-weight:650}
+.uh-auth-subtitle{color:var(--uh-muted)!important;font-size:.76rem;margin:0;letter-spacing:.04em;font-weight:600}
+.uh-auth-shell [data-testid="stVerticalBlockBorderWrapper"]{background:rgba(255,255,255,.97)!important;border:1px solid rgba(219,228,240,.95)!important;border-radius:20px!important;box-shadow:0 18px 50px rgba(11,23,54,.09),0 2px 8px rgba(11,23,54,.04)!important;padding:.95rem!important;animation:uhCard .48s .04s ease both}
+.uh-auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:.2rem;background:#eef3f9;border-radius:11px;padding:.22rem;margin-bottom:.72rem}
+.uh-auth-tab-button button{border:0!important;background:transparent!important;color:#64748b!important;box-shadow:none!important;min-height:38px!important;border-radius:9px!important;font-size:.78rem!important;font-weight:800!important}
+.uh-auth-tab-button-active button{background:#fff!important;color:var(--uh-navy)!important;box-shadow:0 3px 10px rgba(11,23,54,.09)!important}
+.uh-auth-card-title{color:var(--uh-navy);font-size:1.18rem;font-weight:800;margin:.15rem 0 .1rem}
+.uh-auth-card-copy{color:#53637c!important;font-size:.78rem!important;margin:0 0 .72rem!important}
+.uh-auth-demo{margin:.55rem 0 0;padding:.42rem .55rem;border-radius:9px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412!important;font-size:.68rem;text-align:center}
+.uh-auth-divider{display:flex;align-items:center;gap:.55rem;color:#94a3b8;font-size:.68rem;margin:.65rem 0}.uh-auth-divider:before,.uh-auth-divider:after{content:"";height:1px;flex:1;background:#e2e8f0}
+.uh-otp-note{text-align:center;padding:.4rem .55rem;background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af!important;border-radius:9px;font-size:.7rem;margin:.35rem 0 .5rem}
+.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label,.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label p{color:#334155!important;font-weight:700!important;font-size:.73rem!important}
+.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{border:1px solid #cbd5e1!important;border-radius:10px!important;background:#fff!important;color:#0f172a!important;min-height:40px!important;box-shadow:none!important;font-size:.86rem!important}
+.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input:focus{border-color:var(--uh-blue)!important;box-shadow:0 0 0 3px rgba(37,99,235,.11)!important}
+.stApp:has(.uh-auth-shell) button{border-radius:10px!important;min-height:40px!important;font-weight:750!important;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease!important}
+.stApp:has(.uh-auth-shell) button:hover{transform:translateY(-1px)}
+.stApp:has(.uh-auth-shell) button[kind="primary"]{background:linear-gradient(135deg,var(--uh-blue),var(--uh-blue2))!important;color:#fff!important;border:0!important;box-shadow:0 7px 16px rgba(37,99,235,.18)!important}
+.uh-auth-secondary button{background:#fff!important;color:var(--uh-navy)!important;border:1px solid #cbd5e1!important}
+.uh-auth-secondary button:hover{border-color:#93c5fd!important;box-shadow:0 5px 13px rgba(11,23,54,.06)!important}
+.uh-auth-create button,.uh-auth-back button{background:transparent!important;color:var(--uh-blue)!important;border:0!important;box-shadow:none!important}
+.uh-auth-back button{color:#64748b!important}
+.uh-auth-status{padding:.48rem .6rem;border-radius:9px;font-size:.73rem;font-weight:650;margin:.35rem 0}.uh-auth-status.ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0}.uh-auth-status.err{background:#fff1f2;color:#be123c;border:1px solid #fecdd3}
+@keyframes uhFade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}@keyframes uhLogo{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}@keyframes uhCard{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@media(max-width:640px){.uh-auth-shell{min-height:100dvh;padding:.35rem .45rem;overflow:visible}.uh-auth-content{width:min(100%,410px)}.uh-auth-hero{margin-bottom:.5rem}.uh-auth-logo-mark{width:42px;height:42px;border-radius:13px;font-size:1.25rem}.uh-auth-hero h1{font-size:1.85rem!important}.uh-auth-tagline{font-size:.84rem}.uh-auth-subtitle{font-size:.69rem}.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{padding:.72rem!important;border-radius:17px!important}.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{min-height:39px!important}.stApp:has(.uh-auth-shell) button{min-height:40px!important}}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -1181,157 +958,310 @@ def status_badge(status):
 # -----------------------------------------------------------------------------
 
 def _render_auth_shell_start():
-    st.markdown('<div class="uh-auth-shell"><div class="uh-auth-content">',unsafe_allow_html=True)
+    st.markdown('<div class="uh-auth-shell"><div class="uh-auth-content">', unsafe_allow_html=True)
 
-def _render_auth_shell_end(): st.markdown('</div></div>',unsafe_allow_html=True)
+
+def _render_auth_shell_end():
+    st.markdown('</div></div>', unsafe_allow_html=True)
+
 
 def _render_auth_hero():
-    st.markdown("""<div class="uh-auth-hero"><div class="uh-auth-logo-mark">🎓</div><h1>UNI HELP</h1><p class="uh-auth-tagline">Your campus. Your community.<br>Someone can help.</p><p class="uh-auth-subtitle">Borrow • Deliver • Assist • Earn</p></div>""",unsafe_allow_html=True)
+    st.markdown(
+        '<div class="uh-auth-hero"><div class="uh-auth-logo-mark">🎓</div>'
+        '<h1>UNI HELP</h1>'
+        '<p class="uh-auth-tagline">Your campus. Your community.<br>Someone can help.</p>'
+        '<p class="uh-auth-subtitle">Borrow • Deliver • Assist • Earn</p></div>',
+        unsafe_allow_html=True,
+    )
+
 
 def _set_user_and_route(user):
-    st.session_state["user"]=user; st.session_state["nav"]="Admin" if user.get("role")=="admin" else "Dashboard"; st.rerun()
+    st.session_state["user"] = user
+    st.session_state["nav"] = "Admin" if user.get("role") == "admin" else "Dashboard"
+    st.rerun()
 
-def _send_student_login_sms(student_id,password):
-    if not SMS_CONFIGURED: return False,"SMS verification is not configured. Please contact the administrator."
-    ok,result=authenticate_student_credentials(student_id,password)
-    if not ok: return False,result
-    if not normalize_phone(result.get("phone","")): return False,"No valid phone number is registered for this Student ID."
-    if not deliver_sms_otp(result,"LOGIN_SMS_OTP",None,"login"): return False,"Unable to send OTP. Please try again."
-    now=time.time(); st.session_state["login_student_id"]=student_id.strip(); st.session_state["login_otp_resend_at"]=now+SMS_RESEND_SECONDS; return True,"OTP sent successfully."
 
-def _verify_student_login_sms(student_id,password,otp):
-    ok,result=authenticate_student_credentials(student_id,password)
-    if not ok: return False,result
-    ok,msg=verify_otp(result["id"],"LOGIN_SMS_OTP",None,otp); return (True,result) if ok else (False,msg)
+def _send_student_login_sms(student_id, password):
+    if not SMS_CONFIGURED:
+        return False, "SMS verification is not configured. Please contact the administrator."
+    ok, result = authenticate_student_credentials(student_id, password)
+    if not ok:
+        return False, result
+    phone = normalize_phone(result.get("phone") or "")
+    if not phone:
+        return False, "No valid mobile number is registered for this Student ID."
+    if not deliver_sms_otp(result, "LOGIN_SMS_OTP", None, "login"):
+        return False, "Unable to send OTP. Please try again."
+    st.session_state["login_student_id"] = student_id.strip()
+    st.session_state["login_otp_resend_at"] = time.time() + SMS_RESEND_SECONDS
+    return True, "OTP sent successfully."
 
-def _send_registration_otps(user_id):
-    user=user_by_id(user_id)
-    if not user: return False,"Unable to start verification. Please try again."
-    if not EMAIL_CONFIGURED or not SMS_CONFIGURED: return False,"Email and SMS verification are not fully configured. Please contact the administrator."
-    if not deliver_otp(user,"EMAIL_VERIFICATION",None,"email verification"): return False,"Unable to send verification OTPs. Please try again."
-    if not deliver_sms_otp(user,"PHONE_VERIFICATION",None,"phone verification"): return False,"Unable to send verification OTPs. Please try again."
-    st.session_state["registration_resend_at"]=time.time()+SMS_RESEND_SECONDS; return True,"Verification OTPs sent successfully."
 
-def _registration_verify(user,email_otp,phone_otp):
-    ok,msg=verify_otp(user["id"],"EMAIL_VERIFICATION",None,email_otp)
-    if not ok: return False,"OTP expired. Please request new OTPs." if "expired" in msg.lower() else "Invalid email OTP. Please try again."
-    ok,msg=verify_otp(user["id"],"PHONE_VERIFICATION",None,phone_otp)
-    if not ok: return False,"OTP expired. Please request new OTPs." if "expired" in msg.lower() else "Invalid phone OTP. Please try again."
-    return True,"Both OTPs verified successfully."
+def _verify_student_login_sms(student_id, password, otp):
+    ok, result = authenticate_student_credentials(student_id, password)
+    if not ok:
+        return False, result
+    ok, msg = verify_twilio_sms(result.get("phone") or "", otp)
+    return (True, result) if ok else (False, msg)
+
+
+def _send_registration_email_otp(user_id):
+    user = user_by_id(user_id)
+    if not user or not EMAIL_CONFIGURED:
+        return False, "Email verification is not configured. Please contact the administrator."
+    if not deliver_otp(user, "EMAIL_VERIFICATION", None, "email verification"):
+        return False, "Unable to send email OTP. Please try again."
+    st.session_state["registration_email_resend_at"] = time.time() + SMS_RESEND_SECONDS
+    return True, "Email OTP sent successfully."
+
+
+def _send_registration_sms_otp(user_id):
+    user = user_by_id(user_id)
+    if not user or not SMS_CONFIGURED:
+        return False, "SMS verification is not configured. Please contact the administrator."
+    if not normalize_phone(user["phone"] or ""):
+        return False, "No valid mobile number is registered."
+    if not deliver_sms_otp(user, "PHONE_VERIFICATION", None, "phone verification"):
+        return False, "Unable to send SMS OTP. Please try again."
+    st.session_state["registration_sms_resend_at"] = time.time() + SMS_RESEND_SECONDS
+    return True, "SMS OTP sent successfully."
+
+
+def _clear_registration_state():
+    for key in ("pending_registration_user_id", "registration_email_verified", "registration_phone_otp_sent", "registration_email_resend_at", "registration_sms_resend_at"):
+        st.session_state.pop(key, None)
+
+
+def _auth_tabs(active):
+    a, b = st.columns(2, gap="small")
+    with a:
+        st.markdown('<div class="uh-auth-tab-button uh-auth-tab-button-active"><button disabled>LOGIN</button></div>' if active == "login" else '<div class="uh-auth-tab-button"><button disabled>LOGIN</button></div>', unsafe_allow_html=True)
+    with b:
+        st.markdown('<div class="uh-auth-tab-button uh-auth-tab-button-active"><button disabled>CREATE ACCOUNT</button></div>' if active == "register" else '<div class="uh-auth-tab-button"><button disabled>CREATE ACCOUNT</button></div>', unsafe_allow_html=True)
+
 
 def render_landing():
-    _render_auth_shell_start(); _render_auth_hero()
+    _render_auth_shell_start()
+    _render_auth_hero()
     with st.container(border=True):
-        st.markdown('<div class="uh-auth-tabs"><span class="uh-tab-active">LOGIN</span><span>CREATE ACCOUNT</span></div>',unsafe_allow_html=True)
-        st.markdown('<h2>Welcome back</h2><p class="uh-auth-card-copy">Sign in with your Student ID and phone verification.</p>',unsafe_allow_html=True)
-        sid=st.text_input("Student ID",placeholder="Enter your Student ID",key="auth_student_id")
-        pw=st.text_input("Password",type="password",placeholder="Enter your password",key="auth_student_password")
-        if st.button("Send OTP",use_container_width=True,type="primary",key="auth_send_sms"):
-            with st.spinner("Sending secure SMS OTP…"): ok,msg=_send_student_login_sms(sid,pw)
-            if ok: st.success(msg); st.rerun()
-            else: st.error(msg)
+        _auth_tabs("login")
+        st.markdown('<div class="uh-auth-card-title">Welcome back</div><div class="uh-auth-card-copy">Sign in with your Student ID, password and registered mobile.</div>', unsafe_allow_html=True)
+        sid = st.text_input("Student ID", placeholder="Enter your Student ID", key="auth_student_id")
+        pw = st.text_input("Password", type="password", placeholder="Enter your password", key="auth_student_password")
+        if st.button("Send OTP", use_container_width=True, type="primary", key="auth_send_sms"):
+            with st.spinner("Sending secure OTP…"):
+                ok, msg = _send_student_login_sms(sid, pw)
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
         if st.session_state.get("login_student_id"):
-            otp=st.text_input("Phone OTP",max_chars=6,placeholder="••••••",key="auth_login_otp")
-            remaining=max(0,int(st.session_state.get("login_otp_resend_at",0)-time.time()))
-            if st.button("Verify & Login",use_container_width=True,type="primary",key="auth_verify_sms"):
-                with st.spinner("Verifying OTP…"): ok,result=_verify_student_login_sms(sid or st.session_state.get("login_student_id",""),pw,otp)
-                if ok: st.success("Login successful. Welcome back!"); _set_user_and_route(result)
-                else: st.error("OTP expired. Please request a new one." if "expired" in result.lower() else "Invalid OTP. Please try again.")
-            if st.button("Resend OTP",disabled=remaining>0,use_container_width=True,key="auth_resend_sms"):
-                with st.spinner("Sending secure SMS OTP…"): ok,msg=_send_student_login_sms(sid or st.session_state.get("login_student_id",""),pw)
-                if ok: st.success(msg); st.rerun()
-                else: st.error(msg)
-            if remaining>0: st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>',unsafe_allow_html=True)
-        st.markdown('<div class="uh-auth-divider"><span>New to UNI HELP?</span></div>',unsafe_allow_html=True)
-        if st.button("Create an account",use_container_width=True,key="auth_create"):
-            st.session_state["auth_mode"]="Register"; st.rerun()
-        if st.button("Admin Login",use_container_width=True,key="auth_admin"):
-            st.session_state["auth_mode"]="AdminLogin"; st.rerun()
+            st.text_input("Phone OTP", max_chars=6, placeholder="Enter 6-digit OTP", key="auth_login_otp")
+            remaining = max(0, int(st.session_state.get("login_otp_resend_at", 0) - time.time()))
+            if st.button("Verify & Login", use_container_width=True, type="primary", key="auth_verify_sms"):
+                with st.spinner("Verifying OTP…"):
+                    ok, result = _verify_student_login_sms(sid or st.session_state.get("login_student_id", ""), pw, st.session_state.get("auth_login_otp", ""))
+                if ok:
+                    st.success("Login successful. Welcome back!")
+                    st.session_state.pop("login_student_id", None)
+                    st.session_state.pop("login_otp_resend_at", None)
+                    _set_user_and_route(result)
+                else:
+                    st.error("OTP expired. Please request a new one." if "expired" in str(result).lower() else "Invalid OTP. Please try again.")
+            if st.button("Resend OTP", disabled=remaining > 0, use_container_width=True, key="auth_resend_sms"):
+                with st.spinner("Sending secure OTP…"):
+                    ok, msg = _send_student_login_sms(sid or st.session_state.get("login_student_id", ""), pw)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+            if remaining:
+                st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>', unsafe_allow_html=True)
+        st.markdown('<div class="uh-auth-divider"><span>New to UNI HELP?</span></div>', unsafe_allow_html=True)
+        if st.button("Create an account", use_container_width=True, key="auth_create"):
+            st.session_state["auth_mode"] = "Register"
+            st.rerun()
+        if st.button("Admin Login", use_container_width=True, key="auth_admin"):
+            st.session_state["auth_mode"] = "AdminLogin"
+            st.rerun()
+        if not EMAIL_CONFIGURED or not SMS_CONFIGURED:
+            missing = " and ".join(x for x, configured in (("email", EMAIL_CONFIGURED), ("SMS", SMS_CONFIGURED)) if not configured)
+            st.markdown(f'<div class="uh-auth-demo">Configuration notice • {missing} service is not configured</div>', unsafe_allow_html=True)
     _render_auth_shell_end()
+
 
 def render_register():
-    _render_auth_shell_start(); _render_auth_hero()
+    _render_auth_shell_start()
+    _render_auth_hero()
     with st.container(border=True):
-        st.markdown('<div class="uh-auth-tabs"><span>LOGIN</span><span class="uh-tab-active">CREATE ACCOUNT</span></div>',unsafe_allow_html=True)
-        st.markdown('<h2>Create your account</h2><p class="uh-auth-card-copy">Use any valid email and a phone number that can receive SMS.</p>',unsafe_allow_html=True)
-        with st.form("register_form"):
-            c1,c2=st.columns(2)
-            with c1:
-                full_name=st.text_input("Full Name",placeholder="Your full name"); email=st.text_input("Email",placeholder="you@example.com"); student_id=st.text_input("Student ID",placeholder="Your Student ID")
-            with c2:
-                phone=st.text_input("Phone Number",placeholder="+91 9876543210"); password=st.text_input("Password",type="password",placeholder="At least 6 characters"); password2=st.text_input("Confirm Password",type="password",placeholder="Repeat your password")
-            submitted=st.form_submit_button("Send Verification OTPs",use_container_width=True,type="primary")
-        if submitted:
-            if password!=password2: st.error("Passwords do not match.")
-            elif not is_valid_email(email): st.error("Please enter a valid email address.")
-            elif not is_valid_phone(phone): st.error("Please enter a valid phone number with country code.")
-            elif not EMAIL_CONFIGURED or not SMS_CONFIGURED: st.error("Email and SMS verification are not fully configured. Please contact the administrator.")
+        _auth_tabs("register")
+        st.markdown('<div class="uh-auth-card-title">Create your account</div><div class="uh-auth-card-copy">Use any valid email address and a mobile number that can receive SMS.</div>', unsafe_allow_html=True)
+        pending_id = st.session_state.get("pending_registration_user_id")
+        email_verified = bool(st.session_state.get("registration_email_verified"))
+        user = user_by_id(pending_id) if pending_id else None
+
+        if not user or not pending_id:
+            with st.form("register_form"):
+                full_name = st.text_input("Full Name", placeholder="Your full name")
+                email = st.text_input("Email Address", placeholder="you@example.com")
+                student_id = st.text_input("Student ID", placeholder="Your Student ID")
+                phone = st.text_input("Phone Number", placeholder="+91 9876543210")
+                password = st.text_input("Password", type="password", placeholder="At least 6 characters")
+                password2 = st.text_input("Confirm Password", type="password", placeholder="Repeat your password")
+                submitted = st.form_submit_button("Create Account & Send Email OTP", use_container_width=True, type="primary")
+            if submitted:
+                if password != password2:
+                    st.error("Passwords do not match.")
+                elif not is_valid_email(email):
+                    st.error("Please enter a valid email address.")
+                elif not is_valid_phone(phone):
+                    st.error("Please enter a valid phone number with country code.")
+                elif not EMAIL_CONFIGURED:
+                    st.error("Email verification is not configured. Please contact the administrator.")
+                elif not SMS_CONFIGURED:
+                    st.error("SMS verification is not configured. Please contact the administrator.")
+                else:
+                    with st.spinner("Creating secure verification session…"):
+                        ok, result = register_user(full_name, email, phone, student_id, password)
+                    if ok:
+                        st.session_state["pending_registration_user_id"] = result
+                        ok2, msg = _send_registration_email_otp(result)
+                        if ok2:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                    else:
+                        st.error(result)
+        else:
+            st.markdown(f'<div class="uh-auth-status ok">Verification started for <strong>{user["email"]}</strong></div>', unsafe_allow_html=True)
+            if not email_verified:
+                st.text_input("Email OTP", max_chars=6, placeholder="Enter 6-digit email OTP", key="reg_email_otp")
+                if st.button("Verify Email", use_container_width=True, type="primary", key="reg_verify_email"):
+                    with st.spinner("Verifying email…"):
+                        ok, msg = verify_otp(user["id"], "EMAIL_VERIFICATION", None, st.session_state.get("reg_email_otp", ""))
+                    if ok:
+                        st.session_state["registration_email_verified"] = True
+                        st.success("Email verified successfully.")
+                        st.rerun()
+                    else:
+                        st.error("OTP expired. Please request a new one." if "expired" in msg.lower() else "Invalid email OTP. Please try again.")
+                remaining = max(0, int(st.session_state.get("registration_email_resend_at", 0) - time.time()))
+                if st.button("Resend Email OTP", disabled=remaining > 0, use_container_width=True, key="reg_resend_email"):
+                    with st.spinner("Sending email OTP…"):
+                        ok, msg = _send_registration_email_otp(user["id"])
+                    if ok: st.success(msg); st.rerun()
+                    else: st.error(msg)
+                if remaining: st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>', unsafe_allow_html=True)
             else:
-                with st.spinner("Sending verification OTPs…"):
-                    ok,result=register_user(full_name,email,phone,student_id,password)
-                    if ok: ok,msg=_send_registration_otps(result)
-                    else: msg=result
-                if ok: st.session_state["pending_registration_user_id"]=result; st.session_state["auth_mode"]="RegisterVerify"; st.success(msg); st.rerun()
-                else: st.error(msg)
-        if st.button("← Back to login",use_container_width=True,key="register_back"):
-            st.session_state["auth_mode"]="Home"; st.rerun()
+                st.markdown('<div class="uh-auth-status ok">✓ Email verified</div>', unsafe_allow_html=True)
+                if not st.session_state.get("registration_phone_otp_sent"):
+                    if st.button("Send Mobile OTP", use_container_width=True, type="primary", key="reg_send_phone"):
+                        with st.spinner("Sending secure SMS OTP…"):
+                            ok, msg = _send_registration_sms_otp(user["id"])
+                        if ok:
+                            st.session_state["registration_phone_otp_sent"] = True
+                            st.success(msg)
+                            st.rerun()
+                        else: st.error(msg)
+                else:
+                    st.text_input("Mobile OTP", max_chars=6, placeholder="Enter 6-digit SMS OTP", key="reg_phone_otp")
+                    if st.button("Verify Mobile", use_container_width=True, type="primary", key="reg_verify_phone"):
+                        with st.spinner("Verifying mobile…"):
+                            ok, msg = verify_twilio_sms(user.get("phone") or "", st.session_state.get("reg_phone_otp", ""))
+                        if ok:
+                            st.session_state["registration_phone_verified"] = True
+                            st.success("Mobile verified successfully.")
+                            st.rerun()
+                        else:
+                            st.error("OTP expired. Please request a new one." if "expired" in msg.lower() else "Invalid mobile OTP. Please try again.")
+                    remaining = max(0, int(st.session_state.get("registration_sms_resend_at", 0) - time.time()))
+                    if st.button("Resend Mobile OTP", disabled=remaining > 0, use_container_width=True, key="reg_resend_phone"):
+                        with st.spinner("Sending SMS OTP…"):
+                            ok, msg = _send_registration_sms_otp(user["id"])
+                        if ok: st.success(msg); st.rerun()
+                        else: st.error(msg)
+                    if remaining: st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>', unsafe_allow_html=True)
+                if st.session_state.get("registration_phone_verified"):
+                    st.markdown('<div class="uh-auth-status ok">✓ Email and mobile verified</div>', unsafe_allow_html=True)
+                    if st.button("Create Account", use_container_width=True, type="primary", key="reg_finish"):
+                        with st.spinner("Creating your UNI HELP account…"):
+                            conn = get_conn()
+                            conn.execute("UPDATE users SET verified=1 WHERE id=?", (user["id"],))
+                            conn.commit(); conn.close()
+                        notify(user["id"], "Welcome to UNI HELP! Your email and phone have been verified.")
+                        _clear_registration_state()
+                        st.session_state["auth_mode"] = "Home"
+                        st.success("Account created successfully. Please log in.")
+                        st.rerun()
+        st.markdown('<div class="uh-auth-divider"><span>Already have an account?</span></div>', unsafe_allow_html=True)
+        if st.button("← Back to Login", use_container_width=True, key="register_back"):
+            _clear_registration_state()
+            st.session_state["auth_mode"] = "Home"
+            st.rerun()
     _render_auth_shell_end()
 
+
 def render_register_verify():
-    _render_auth_shell_start(); _render_auth_hero()
-    with st.container(border=True):
-        st.markdown('<h2>Verify your account</h2><p class="uh-auth-card-copy">Enter both codes sent to your email and phone.</p>',unsafe_allow_html=True)
-        uid=st.session_state.get("pending_registration_user_id"); user=user_by_id(uid) if uid else None
-        if not user: st.error("Verification session not found. Please create your account again.")
-        else:
-            email_otp=st.text_input("Email OTP",max_chars=6,placeholder="••••••",key="reg_email_otp"); phone_otp=st.text_input("Phone OTP",max_chars=6,placeholder="••••••",key="reg_phone_otp")
-            remaining=max(0,int(st.session_state.get("registration_resend_at",0)-time.time()))
-            if st.button("Verify & Create Account",use_container_width=True,type="primary",key="reg_verify"):
-                with st.spinner("Verifying OTPs…"): ok,msg=_registration_verify(user,email_otp,phone_otp)
-                if ok:
-                    conn=get_conn(); conn.execute("UPDATE users SET verified=1 WHERE id=?",(user["id"],)); conn.commit(); conn.close(); notify(user["id"],"Welcome to UNI HELP! Your email and phone have been verified."); st.success("Account created successfully! You can now log in."); st.session_state.pop("pending_registration_user_id",None); st.session_state["auth_mode"]="Home"; st.rerun()
-                else: st.error(msg)
-            if st.button("Resend OTPs",disabled=remaining>0,use_container_width=True,key="reg_resend"):
-                with st.spinner("Sending verification OTPs…"): ok,msg=_send_registration_otps(user["id"])
-                if ok: st.success(msg); st.rerun()
-                else: st.error(msg)
-            if remaining>0: st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>',unsafe_allow_html=True)
-    _render_auth_shell_end()
+    # Legacy route retained so existing session links do not break.
+    render_register()
+
 
 def render_verify():
     _render_auth_shell_start(); _render_auth_hero()
     with st.container(border=True):
-        st.markdown('<h2>Verify your email</h2><p class="uh-auth-card-copy">Enter the 6-digit code sent to your email.</p>',unsafe_allow_html=True)
-        email=st.session_state.get("pending_verify_email",""); email=st.text_input("Email address",value=email,key="verify_email"); otp=st.text_input("Email OTP",max_chars=6,placeholder="••••••",key="verify_otp")
-        if st.button("Verify OTP",use_container_width=True,type="primary",key="verify_otp_button"):
-            u=user_by_email(email.strip().lower())
+        st.markdown('<div class="uh-auth-card-title">Verify your email</div><div class="uh-auth-card-copy">Enter the 6-digit code sent to your email.</div>', unsafe_allow_html=True)
+        email = st.session_state.get("pending_verify_email", "")
+        email = st.text_input("Email address", value=email, key="verify_email")
+        otp = st.text_input("Email OTP", max_chars=6, placeholder="Enter 6-digit OTP", key="verify_otp")
+        if st.button("Verify OTP", use_container_width=True, type="primary", key="verify_otp_button"):
+            u = user_by_email(email.strip().lower())
             if not u: st.error("No account found with that email.")
             else:
-                with st.spinner("Verifying OTP…"): ok,msg=verify_otp(u["id"],"EMAIL_VERIFICATION",None,otp)
+                with st.spinner("Verifying OTP…"):
+                    ok, msg = verify_otp(u["id"], "EMAIL_VERIFICATION", None, otp)
                 if ok:
-                    conn=get_conn(); conn.execute("UPDATE users SET verified=1 WHERE id=?",(u["id"],)); conn.commit(); conn.close(); notify(u["id"],"Your email has been verified."); st.success("Email verified successfully."); st.session_state["auth_mode"]="Home"; st.rerun()
+                    conn = get_conn(); conn.execute("UPDATE users SET verified=1 WHERE id=?", (u["id"],)); conn.commit(); conn.close()
+                    notify(u["id"], "Your email has been verified.")
+                    st.success("Email verified successfully.")
+                    st.session_state["auth_mode"] = "Home"; st.rerun()
                 else: st.error("OTP expired. Please request a new one." if "expired" in msg.lower() else "Invalid OTP. Please try again.")
-        if st.button("Resend OTP",use_container_width=True,key="verify_resend"):
-            u=user_by_email(email.strip().lower())
+        if st.button("Resend OTP", use_container_width=True, key="verify_resend"):
+            u = user_by_email(email.strip().lower())
             if not u or not EMAIL_CONFIGURED: st.error("Unable to send OTP. Please try again later.")
-            elif deliver_otp(u,"EMAIL_VERIFICATION",None,"email verification"): st.success("OTP sent successfully."); st.rerun()
+            elif deliver_otp(u, "EMAIL_VERIFICATION", None, "email verification"): st.success("OTP sent successfully."); st.rerun()
             else: st.error("Unable to send OTP. Please try again.")
+        if st.button("← Back", use_container_width=True, key="verify_back"):
+            st.session_state["auth_mode"] = "Home"; st.rerun()
     _render_auth_shell_end()
 
-def render_login(): render_landing()
+
+def render_login():
+    # Existing route retained; use the redesigned login screen.
+    render_landing()
+
 
 def render_admin_login():
     _render_auth_shell_start(); _render_auth_hero()
     with st.container(border=True):
-        st.markdown('<h2>Admin Login</h2><p class="uh-auth-card-copy">Secure platform management access only.</p>',unsafe_allow_html=True)
+        st.markdown('<div class="uh-auth-card-title">Admin Login</div><div class="uh-auth-card-copy">Secure platform management access only.</div>', unsafe_allow_html=True)
         with st.form("admin_login_form"):
-            email=st.text_input("Admin email",key="admin_login_email"); password=st.text_input("Admin password",type="password",key="admin_login_password"); submitted=st.form_submit_button("Sign in as Admin",use_container_width=True,type="primary")
+            email = st.text_input("Admin email", key="admin_login_email")
+            password = st.text_input("Admin password", type="password", key="admin_login_password")
+            submitted = st.form_submit_button("Sign in as Admin", use_container_width=True, type="primary")
         if submitted:
-            with st.spinner("Signing in securely…"): ok,result=login_user(email,password)
-            if ok and result.get("role")=="admin": _set_user_and_route(result)
-            elif ok: st.error("This account does not have administrator access.")
-            else: st.error("Invalid admin credentials.")
-        if st.button("← Back to login",use_container_width=True,key="admin_login_back"): st.session_state["auth_mode"]="Home"; st.rerun()
+            with st.spinner("Signing in securely…"):
+                ok, result = login_user(email, password)
+            if ok and result.get("role") == "admin":
+                _set_user_and_route(result)
+            elif ok:
+                st.error("This account does not have administrator access.")
+            else:
+                st.error("Invalid admin credentials.")
+        if st.button("← Back to login", use_container_width=True, key="admin_login_back"):
+            st.session_state["auth_mode"] = "Home"; st.rerun()
     _render_auth_shell_end()
 
 
@@ -2144,23 +2074,141 @@ def render_disputes(user):
 # 6.8 ADMIN DASHBOARD
 # -----------------------------------------------------------------------------
 
-def render_admin(user):
-    if user["role"] != "admin":
-        st.error("Access denied. Admins only.")
+def _admin_student_avg_rating(user_row):
+    return round(user_row["rating_sum"] / user_row["rating_count"], 1) if user_row["rating_count"] else 0
+
+
+def render_admin_student_profile(admin_user, student_id):
+    conn = get_conn()
+    student = conn.execute(
+        "SELECT * FROM users WHERE role='student' AND student_id=? LIMIT 1", (student_id,)
+    ).fetchone()
+    if not student:
+        conn.close()
+        st.error("Student profile could not be found.")
+        if st.button("← Back to Users", key="admin_profile_missing_back"):
+            st.session_state.pop("admin_profile_user_id", None); st.rerun()
         return
 
-    if not EMAIL_CONFIGURED:
-        st.warning(
-            "⚙️ SMTP is not configured. Add SMTP_HOST, SMTP_PORT, SMTP_USERNAME and "
-            "SMTP_PASSWORD to Streamlit Secrets before enabling email OTPs."
-        )
+    sid = student["id"]
+    rating = _admin_student_avg_rating(student)
+    completed_tasks = conn.execute("SELECT COUNT(*) c FROM tasks WHERE helper_id=? AND status='COMPLETED'", (sid,)).fetchone()["c"]
+    active_borrowings = conn.execute(
+        "SELECT COUNT(*) c FROM borrowings WHERE borrower_id=? AND status NOT IN ('COMPLETED','REJECTED','CANCELLED')", (sid,)
+    ).fetchone()["c"]
+    completed_deliveries = conn.execute("SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (sid,)).fetchone()["c"]
+    earnings = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (sid,)).fetchone()["s"]
+    transaction_count = conn.execute("SELECT COUNT(*) c FROM transactions WHERE payer_id=? OR payee_id=?", (sid, sid)).fetchone()["c"]
+    unread_notifications = conn.execute("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0", (sid,)).fetchone()["c"]
+    dispute_count = conn.execute("SELECT COUNT(*) c FROM disputes WHERE reporter_id=?", (sid,)).fetchone()["c"]
+    conn.close()
 
-    st.markdown("## 🛡 Admin Dashboard")
+    st.markdown("## Student Profile")
+    if st.button("← Back to Users", key="admin_profile_back_top"):
+        st.session_state.pop("admin_profile_user_id", None); st.rerun()
+
+    status_html = ('<span class="uh-badge" style="background:#fee2e2;color:#991b1b;">🔴 Suspended</span>' if student["is_suspended"] else
+                   '<span class="uh-badge" style="background:#dcfce7;color:#166534;">🟢 Active</span>')
+    verification_html = ('<span class="uh-badge" style="background:#dcfce7;color:#166534;">✓ Verified</span>' if student["verified"] else
+                         '<span class="uh-badge" style="background:#fef3c7;color:#92400e;">Pending verification</span>')
+    st.markdown(f'''<div class="uh-admin-profile-card"><div class="uh-profile-header">
+        <div class="uh-profile-avatar">{str(student["full_name"] or "S")[0].upper()}</div>
+        <div><h2>{student["full_name"]}</h2><div class="uh-profile-sub">Student ID: <strong>{student["student_id"]}</strong></div>
+        <div class="uh-profile-status">{status_html} &nbsp; {verification_html}</div></div>
+    </div></div>''', unsafe_allow_html=True)
+
+    st.markdown("### Profile information")
+    info = st.columns(2)
+    info[0].markdown(f"**Email**\n\n{student['email'] or '—'}")
+    info[1].markdown(f"**Phone Number**\n\n{student['phone'] or '—'}")
+    info[0].markdown(f"**Registration Date**\n\n{str(student['created_at'])[:19].replace('T', ' ')}")
+    info[1].markdown(f"**Account Status**\n\n{'Suspended' if student['is_suspended'] else 'Active'}")
+
+    st.markdown("### Activity statistics")
+    stats = st.columns(7)
+    stats[0].metric("Trust Score", f"{student['trust_score']}/100")
+    stats[1].metric("Rating", f"⭐ {rating:.1f}" if rating else "—")
+    stats[2].metric("Tasks Completed", completed_tasks)
+    stats[3].metric("Active Borrowings", active_borrowings)
+    stats[4].metric("Completed Deliveries", completed_deliveries)
+    stats[5].metric("UniCoins", student["unicoins"])
+    stats[6].metric("Earnings", f"₹{earnings:.0f}")
+
+    st.markdown("### Account activity")
+    ac = st.columns(3)
+    ac[0].metric("Transactions", transaction_count)
+    ac[1].metric("Unread Notifications", unread_notifications)
+    ac[2].metric("Reported Disputes", dispute_count)
+
+    conn = get_conn()
+    tabs = st.tabs(["Delivery History", "Borrowing History", "Micro-Task History", "Transactions", "Ratings", "Notifications", "Disputes"])
+    with tabs[0]:
+        rows = conn.execute("SELECT r.*, u.full_name requester_name FROM requests r LEFT JOIN users u ON u.id=r.requester_id WHERE r.helper_id=? OR r.requester_id=? ORDER BY r.id DESC LIMIT 100", (sid, sid)).fetchall()
+        if not rows: st.info("No delivery history for this student.")
+        for r in rows:
+            role = "Requested" if r["requester_id"] == sid else "Completed as helper" if r["status"] == "COMPLETED" else "Helped with"
+            st.markdown(f"**#{r['id']} — {r['item_name']}** · {role} · {status_badge(r['status'])}<br>{r['pickup_location']} → {r['destination']} · ₹{r['reward']:.0f}<br><small>{str(r['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
+    with tabs[1]:
+        rows = conn.execute("SELECT b.*, i.item_name, owner.full_name owner_name, borrower.full_name borrower_name FROM borrowings b JOIN items i ON i.id=b.item_id JOIN users owner ON owner.id=b.owner_id JOIN users borrower ON borrower.id=b.borrower_id WHERE b.borrower_id=? OR b.owner_id=? ORDER BY b.id DESC LIMIT 100", (sid, sid)).fetchall()
+        if not rows: st.info("No borrowing history for this student.")
+        for b in rows:
+            role = "Borrower" if b["borrower_id"] == sid else "Owner"
+            st.markdown(f"**#{b['id']} — {b['item_name']}** · {role} · {status_badge(b['status'])}<br>Owner: {b['owner_name']} · Borrower: {b['borrower_name']}<br><small>Created {str(b['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
+    with tabs[2]:
+        rows = conn.execute("SELECT t.*, creator.full_name creator_name, helper.full_name helper_name FROM tasks t JOIN users creator ON creator.id=t.creator_id LEFT JOIN users helper ON helper.id=t.helper_id WHERE t.creator_id=? OR t.helper_id=? ORDER BY t.id DESC LIMIT 100", (sid, sid)).fetchall()
+        if not rows: st.info("No micro-task history for this student.")
+        for t in rows:
+            role = "Creator" if t["creator_id"] == sid else "Helper"
+            st.markdown(f"**#{t['id']} — {t['title']}** · {role} · {status_badge(t['status'])}<br>Creator: {t['creator_name']} · Helper: {t['helper_name'] or 'Unassigned'} · ₹{t['reward']:.0f}<br><small>{str(t['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
+    with tabs[3]:
+        rows = conn.execute("SELECT * FROM transactions WHERE payer_id=? OR payee_id=? ORDER BY id DESC LIMIT 100", (sid, sid)).fetchall()
+        if not rows: st.info("No transactions for this student.")
+        for tx in rows:
+            role = "Paid" if tx["payer_id"] == sid else "Received"
+            st.markdown(f"**#{tx['id']} — ₹{tx['amount']:.0f}** · {role} · {tx['related_type']} #{tx['related_id']} · {status_badge(tx['status'])}<br><small>{str(tx['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
+    with tabs[4]:
+        rows = conn.execute("SELECT r.*, u.full_name rater_name FROM ratings r JOIN users u ON u.id=r.rater_id WHERE r.ratee_id=? ORDER BY r.id DESC LIMIT 100", (sid,)).fetchall()
+        if not rows: st.info("No ratings received by this student.")
+        for r in rows:
+            st.markdown(f"**{'⭐' * r['stars']}** · from {r['rater_name']} · {r['transaction_type']} #{r['transaction_id']}")
+            if r["review"]: st.caption(r["review"])
+            st.divider()
+    with tabs[5]:
+        rows = conn.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 100", (sid,)).fetchall()
+        if not rows: st.info("No notifications for this student.")
+        for n in rows:
+            st.markdown(f"{'🔵' if not n['is_read'] else '⚪'} {n['message']}  \n<small>{str(n['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
+    with tabs[6]:
+        rows = conn.execute("SELECT * FROM disputes WHERE reporter_id=? ORDER BY id DESC LIMIT 100", (sid,)).fetchall()
+        if not rows: st.info("No disputes reported by this student.")
+        for d in rows:
+            st.markdown(f"**#{d['id']} — {d['category']}** · {d['transaction_type']} #{d['transaction_id']} · {status_badge(d['status'])}<br>{d['description'] or ''}<br><small>{str(d['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
+    conn.close()
+
+    action_col, back_col = st.columns([1, 1])
+    if student["is_suspended"]:
+        if action_col.button("Unsuspend User", key=f"profile_unsuspend_{sid}", use_container_width=True):
+            conn = get_conn(); conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (sid,)); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (admin_user["id"], "UNSUSPEND_USER", sid, "", now_iso())); conn.commit(); conn.close(); st.success("User unsuspended successfully."); st.rerun()
+    else:
+        if action_col.button("Suspend User", key=f"profile_suspend_{sid}", use_container_width=True):
+            conn = get_conn(); conn.execute("UPDATE users SET is_suspended=1 WHERE id=?", (sid,)); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (admin_user["id"], "SUSPEND_USER", sid, "", now_iso())); conn.commit(); conn.close(); st.success("User suspended successfully."); st.rerun()
+    if back_col.button("← Back to Users", key="admin_profile_back_bottom", use_container_width=True):
+        st.session_state.pop("admin_profile_user_id", None); st.rerun()
+
+
+def render_admin(user):
+    if user["role"] != "admin":
+        st.error("Access denied. Admins only."); return
+    if st.session_state.get("admin_profile_user_id"):
+        render_admin_student_profile(user, st.session_state["admin_profile_user_id"]); return
+    if not EMAIL_CONFIGURED:
+        st.warning("⚙️ SMTP is not configured. Add SMTP_HOST, SMTP_PORT, SMTP_USERNAME and SMTP_PASSWORD to Streamlit Secrets before enabling email OTPs.")
     if not EMAIL_CONFIGURED or not SMS_CONFIGURED:
         missing=[]
         if not EMAIL_CONFIGURED: missing.append("email SMTP")
         if not SMS_CONFIGURED: missing.append("SMS/Twilio")
         st.warning("Authentication configuration incomplete: " + ", ".join(missing) + ".")
+    st.markdown("## 🛡 Admin Dashboard")
     conn = get_conn()
     total_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student'").fetchone()["c"]
     verified_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND verified=1").fetchone()["c"]
@@ -2171,89 +2219,68 @@ def render_admin(user):
     disputes_open = conn.execute("SELECT COUNT(*) c FROM disputes WHERE status='OPEN'").fetchone()["c"]
     suspended = conn.execute("SELECT COUNT(*) c FROM users WHERE is_suspended=1").fetchone()["c"]
     total_value = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions").fetchone()["s"]
-
-    r1 = st.columns(4)
-    r1[0].metric("Total Users", total_users)
-    r1[1].metric("Verified Users", verified_users)
-    r1[2].metric("Active Requests", active_requests)
-    r1[3].metric("Total Deliveries", deliveries)
-    r2 = st.columns(4)
-    r2[0].metric("Borrowings", borrowings)
-    r2[1].metric("Completed Tasks", completed_tasks)
-    r2[2].metric("Open Disputes", disputes_open)
-    r2[3].metric("Suspended Users", suspended)
+    r1 = st.columns(4); r1[0].metric("Total Users", total_users); r1[1].metric("Verified Users", verified_users); r1[2].metric("Active Requests", active_requests); r1[3].metric("Total Deliveries", deliveries)
+    r2 = st.columns(4); r2[0].metric("Borrowings", borrowings); r2[1].metric("Completed Tasks", completed_tasks); r2[2].metric("Open Disputes", disputes_open); r2[3].metric("Suspended Users", suspended)
     st.metric("Total Prototype Transaction Value (₹)", f"{total_value:.0f}")
-
-    st.divider()
-    tabs = st.tabs(["Users", "Disputes", "Transactions", "Requests"])
-
+    st.divider(); tabs = st.tabs(["Users", "Disputes", "Transactions", "Requests"])
     with tabs[0]:
+        st.markdown("### Search student by Student ID")
+        search_col, button_col = st.columns([5, 1])
+        with search_col:
+            search_id = st.text_input("Enter Student ID", placeholder="Enter Student ID …", label_visibility="collapsed", key="admin_student_search").strip()
+        with button_col:
+            search_clicked = st.button("Search", use_container_width=True, type="primary", key="admin_student_search_btn")
+        if search_clicked:
+            if not search_id:
+                st.warning("Enter a Student ID to search."); st.session_state.pop("admin_search_result_id", None)
+            else:
+                result = conn.execute("SELECT id FROM users WHERE role='student' AND student_id=? LIMIT 1", (search_id,)).fetchone()
+                if result: st.session_state["admin_search_result_id"] = result["id"]
+                else: st.session_state.pop("admin_search_result_id", None); st.warning("No student found with that Student ID.")
+        result_id = st.session_state.get("admin_search_result_id")
+        if result_id:
+            u = conn.execute("SELECT * FROM users WHERE id=? AND role='student'", (result_id,)).fetchone()
+            if u:
+                rating = _admin_student_avg_rating(u)
+                completed_tasks_u = conn.execute("SELECT COUNT(*) c FROM tasks WHERE helper_id=? AND status='COMPLETED'", (u["id"],)).fetchone()["c"]
+                active_borrow_u = conn.execute("SELECT COUNT(*) c FROM borrowings WHERE borrower_id=? AND status NOT IN ('COMPLETED','REJECTED','CANCELLED')", (u["id"],)).fetchone()["c"]
+                completed_delivery_u = conn.execute("SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (u["id"],)).fetchone()["c"]
+                earnings_u = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (u["id"],)).fetchone()["s"]
+                status = "Suspended" if u["is_suspended"] else "Active"; verification = "Verified" if u["verified"] else "Unverified"
+                st.markdown(f'''<div class="uh-admin-search-result"><div class="uh-profile-header"><div class="uh-profile-avatar">{str(u["full_name"] or "S")[0].upper()}</div><div><h3>{u["full_name"]}</h3><div class="uh-profile-sub">Student ID: <strong>{u["student_id"]}</strong></div></div></div><div class="uh-profile-grid"><div><span>Email</span><strong>{u["email"]}</strong></div><div><span>Phone</span><strong>{u["phone"] or '—'}</strong></div><div><span>Verification</span><strong>{verification}</strong></div><div><span>Trust Score</span><strong>{u["trust_score"]}/100</strong></div><div><span>Rating</span><strong>{f'⭐ {rating:.1f}' if rating else '—'}</strong></div><div><span>Tasks Completed</span><strong>{completed_tasks_u}</strong></div><div><span>Active Borrowings</span><strong>{active_borrow_u}</strong></div><div><span>Completed Deliveries</span><strong>{completed_delivery_u}</strong></div><div><span>Earnings</span><strong>₹{earnings_u:.0f}</strong></div><div><span>UniCoins</span><strong>🪙 {u["unicoins"]}</strong></div><div><span>Account Status</span><strong>{status}</strong></div><div><span>Registered</span><strong>{str(u["created_at"])[:10]}</strong></div></div></div>''', unsafe_allow_html=True)
+                if st.button("View Full Profile", key=f"view_profile_{u['id']}", type="primary", use_container_width=True):
+                    st.session_state["admin_profile_user_id"] = u["student_id"]; st.session_state.pop("admin_search_result_id", None); st.rerun()
+        st.markdown("### All students")
         users = conn.execute("SELECT * FROM users WHERE role='student' ORDER BY id DESC").fetchall()
         for u in users:
             with st.container(border=True):
-                cols = st.columns([3, 1, 1, 1])
-                cols[0].write(f"**{u['full_name']}** ({u['email']}) — Trust: {u['trust_score']}  "
-                               f"{'🟢 Verified' if u['verified'] else '🟡 Unverified'}  "
-                               f"{'🔴 Suspended' if u['is_suspended'] else ''}")
+                cols = st.columns([4, 1, 1, 1])
+                cols[0].write(f"**{u['full_name']}** · Student ID: **{u['student_id'] or '—'}** · {u['email']} — Trust: {u['trust_score']}  {'🟢 Verified' if u['verified'] else '🟡 Unverified'}  {'🔴 Suspended' if u['is_suspended'] else '🟢 Active'}")
+                if cols[1].button("Profile", key=f"profile_list_{u['id']}"):
+                    st.session_state["admin_profile_user_id"] = u["student_id"]; st.rerun()
                 if u["is_suspended"]:
-                    if cols[1].button("Unsuspend", key=f"unsusp_{u['id']}"):
-                        conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (u["id"],))
-                        conn.commit()
-                        conn.execute(
-                            "INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)",
-                            (user["id"], "UNSUSPEND_USER", u["id"], "", now_iso()),
-                        )
-                        conn.commit()
-                        st.rerun()
+                    if cols[2].button("Unsuspend", key=f"unsusp_{u['id']}"):
+                        conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (u["id"],)); conn.commit(); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "UNSUSPEND_USER", u["id"], "", now_iso())); conn.commit(); st.rerun()
                 else:
-                    if cols[1].button("Suspend", key=f"susp_{u['id']}"):
-                        conn.execute("UPDATE users SET is_suspended=1 WHERE id=?", (u["id"],))
-                        conn.execute(
-                            "INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)",
-                            (user["id"], "SUSPEND_USER", u["id"], "", now_iso()),
-                        )
-                        conn.commit()
-                        st.rerun()
-
+                    if cols[2].button("Suspend", key=f"susp_{u['id']}"):
+                        conn.execute("UPDATE users SET is_suspended=1 WHERE id=?", (u["id"],)); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "SUSPEND_USER", u["id"], "", now_iso())); conn.commit(); st.rerun()
     with tabs[1]:
-        disputes = conn.execute(
-            "SELECT d.*, u.full_name reporter_name FROM disputes d JOIN users u ON u.id=d.reporter_id ORDER BY d.id DESC"
-        ).fetchall()
+        disputes = conn.execute("SELECT d.*, u.full_name reporter_name FROM disputes d JOIN users u ON u.id=d.reporter_id ORDER BY d.id DESC").fetchall()
         for d in disputes:
             with st.container(border=True):
-                st.markdown(f"**{d['category']}** — {d['transaction_type']} #{d['transaction_id']} "
-                            f"reported by {d['reporter_name']}  {status_badge(d['status'])}", unsafe_allow_html=True)
-                st.write(d["description"] or "")
-                if d["evidence_path"] and os.path.exists(d["evidence_path"]):
-                    st.image(d["evidence_path"], width=200)
+                st.markdown(f"**{d['category']}** — {d['transaction_type']} #{d['transaction_id']} reported by {d['reporter_name']}  {status_badge(d['status'])}", unsafe_allow_html=True); st.write(d["description"] or "")
+                if d["evidence_path"] and os.path.exists(d["evidence_path"]): st.image(d["evidence_path"], width=200)
                 if d["status"] in ("OPEN", "UNDER_REVIEW"):
-                    c1, c2, c3 = st.columns(3)
-                    if c1.button("Mark Under Review", key=f"dur_{d['id']}"):
-                        conn.execute("UPDATE disputes SET status='UNDER_REVIEW' WHERE id=?", (d["id"],))
-                        conn.commit(); st.rerun()
-                    if c2.button("Resolve", key=f"dres_{d['id']}"):
-                        conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE id=?", (now_iso(), d["id"]))
-                        conn.commit()
-                        conn.execute(
-                            "INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)",
-                            (user["id"], "RESOLVE_DISPUTE", d["id"], "", now_iso()),
-                        )
-                        conn.commit()
-                        st.rerun()
-                    if c3.button("Reject", key=f"drej_{d['id']}"):
-                        conn.execute("UPDATE disputes SET status='REJECTED', resolved_at=? WHERE id=?", (now_iso(), d["id"]))
-                        conn.commit(); st.rerun()
-
+                    c1,c2,c3=st.columns(3)
+                    if c1.button("Mark Under Review", key=f"dur_{d['id']}"): conn.execute("UPDATE disputes SET status='UNDER_REVIEW' WHERE id=?", (d["id"],)); conn.commit(); st.rerun()
+                    if c2.button("Resolve", key=f"dres_{d['id']}"): conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE id=?", (now_iso(), d["id"])); conn.commit(); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "RESOLVE_DISPUTE", d["id"], "", now_iso())); conn.commit(); st.rerun()
+                    if c3.button("Reject", key=f"drej_{d['id']}"): conn.execute("UPDATE disputes SET status='REJECTED', resolved_at=? WHERE id=?", (now_iso(), d["id"])); conn.commit(); st.rerun()
     with tabs[2]:
-        txs = conn.execute("SELECT * FROM transactions ORDER BY id DESC LIMIT 100").fetchall()
-        for tx in txs:
-            st.markdown(f"#{tx['id']} — ₹{tx['amount']:.0f} — {tx['related_type']} #{tx['related_id']}  {status_badge(tx['status'])}", unsafe_allow_html=True)
-
+        txs=conn.execute("SELECT * FROM transactions ORDER BY id DESC LIMIT 100").fetchall()
+        for tx in txs: st.markdown(f"#{tx['id']} — ₹{tx['amount']:.0f} — {tx['related_type']} #{tx['related_id']}  {status_badge(tx['status'])}", unsafe_allow_html=True)
     with tabs[3]:
-        reqs = conn.execute("SELECT * FROM requests ORDER BY id DESC LIMIT 100").fetchall()
-        for r in reqs:
-            st.markdown(f"#{r['id']} {r['item_name']}  {status_badge(r['status'])}", unsafe_allow_html=True)
-
+        reqs=conn.execute("SELECT * FROM requests ORDER BY id DESC LIMIT 100").fetchall()
+        for r in reqs: st.markdown(f"#{r['id']} {r['item_name']}  {status_badge(r['status'])}", unsafe_allow_html=True)
     conn.close()
 
 
