@@ -16,6 +16,9 @@ import math
 import io
 import time
 import re
+import urllib.request
+import urllib.parse
+import base64
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
@@ -57,6 +60,17 @@ except Exception:
     SMTP_PASSWORD = ""
 
 EMAIL_CONFIGURED = bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSWORD)
+
+try:
+    TWILIO_ACCOUNT_SID = str(st.secrets.get("TWILIO_ACCOUNT_SID", "")).strip()
+    TWILIO_AUTH_TOKEN = str(st.secrets.get("TWILIO_AUTH_TOKEN", "")).strip()
+    TWILIO_FROM_NUMBER = str(st.secrets.get("TWILIO_FROM_NUMBER", "")).strip()
+except Exception:
+    TWILIO_ACCOUNT_SID = ""
+    TWILIO_AUTH_TOKEN = ""
+    TWILIO_FROM_NUMBER = ""
+SMS_CONFIGURED = bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER)
+SMS_RESEND_SECONDS = 30
 
 MIN_REWARD = float(os.getenv("MIN_REWARD", "0"))
 MAX_REWARD = float(os.getenv("MAX_REWARD", "5000"))
@@ -665,47 +679,73 @@ def is_valid_email(email):
     return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email.strip()))
 
 
-def register_user(full_name, email, phone, student_id, password):
-    email = email.strip().lower()
-    if not full_name.strip():
-        return False, "Full name is required."
-    if not is_valid_email(email):
-        return False, "Please enter a valid email address."
-    if len(password) < 6:
-        return False, "Password must be at least 6 characters."
-    if user_by_email(email):
-        return False, "An account with this email already exists."
-
-    conn = get_conn()
-    conn.execute(
-        """INSERT INTO users (full_name, email, phone, student_id, password_hash, role,
-            verified, trust_score, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        (full_name.strip(), email, phone.strip(), student_id.strip(),
-         hash_password(password), "student", 0, 50, now_iso()),
-    )
-    new_id = conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]
-    conn.commit()
-    conn.close()
-
-    user_row = user_by_id(new_id)
-    deliver_otp(user_row, "EMAIL_VERIFICATION", None, "email verification")
-    notify(new_id, "Welcome to UNI HELP! Please verify your email to unlock all features.")
-    return True, new_id
+def normalize_phone(phone):
+    raw = phone.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    if raw.startswith("+") and raw[1:].isdigit() and 10 <= len(raw[1:]) <= 15: return raw
+    if raw.isdigit() and len(raw) == 10: return "+91" + raw
+    return ""
 
 
-def login_user(email, password):
-    row = user_by_email(email.strip().lower())
-    if row is None:
-        return False, "No account found with that email."
-    if not verify_password(password, row["password_hash"]):
-        return False, "Incorrect password."
-    if row["is_suspended"]:
-        return False, "This account has been suspended. Contact an administrator."
-    return True, dict(row)
+def is_valid_phone(phone): return bool(normalize_phone(phone))
 
 
-# =============================================================================
+def send_sms(to_phone, message):
+    if not SMS_CONFIGURED: return False
+    try:
+        url=f"https://api.twilio.com/2010-04-01/Accounts/{urllib.parse.quote(TWILIO_ACCOUNT_SID, safe='')}/Messages.json"
+        data=urllib.parse.urlencode({"From":TWILIO_FROM_NUMBER,"To":to_phone,"Body":message}).encode()
+        req=urllib.request.Request(url,data=data,method="POST")
+        req.add_header("Authorization","Basic "+base64.b64encode(f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()).decode())
+        req.add_header("Content-Type","application/x-www-form-urlencoded")
+        with urllib.request.urlopen(req,timeout=20) as response: return 200 <= response.status < 300
+    except Exception as exc:
+        st.session_state["_last_sms_error"]=str(exc); return False
+
+
+def deliver_sms_otp(user_row,purpose,reference_id=None,context_label="verification"):
+    otp_plain=create_otp(user_row["id"],purpose,reference_id)
+    message=f"UNI HELP: Your {context_label} code is {otp_plain}. It expires in {OTP_EXPIRY_MINUTES} minutes. Do not share this code."
+    sent=send_sms(normalize_phone(user_row["phone"] or ""),message)
+    if not sent:
+        conn=get_conn(); conn.execute("UPDATE otp_records SET used=1 WHERE user_id=? AND purpose=? AND (reference_id=? OR (reference_id IS NULL AND ? IS NULL)) AND used=0",(user_row["id"],purpose,reference_id,reference_id)); conn.commit(); conn.close()
+    return sent
+
+
+def register_user(full_name,email,phone,student_id,password):
+    email=email.strip().lower(); phone=normalize_phone(phone); student_id=student_id.strip()
+    if not full_name.strip(): return False,"Full name is required."
+    if not is_valid_email(email): return False,"Please enter a valid email address."
+    if not phone: return False,"Please enter a valid phone number with country code."
+    if not student_id: return False,"Student ID is required."
+    if len(password)<6: return False,"Password must be at least 6 characters."
+    if user_by_email(email): return False,"An account with this email already exists."
+    conn=get_conn()
+    if conn.execute("SELECT id FROM users WHERE student_id=?",(student_id,)).fetchone(): conn.close(); return False,"An account with this Student ID already exists."
+    conn.execute("INSERT INTO users (full_name,email,phone,student_id,password_hash,role,verified,trust_score,created_at) VALUES (?,?,?,?,?,?,?,?,?)",(full_name.strip(),email,phone,student_id,hash_password(password),"student",0,50,now_iso()))
+    new_id=conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]; conn.commit(); conn.close(); return True,new_id
+
+
+def user_by_student_id(student_id):
+    conn=get_conn(); row=conn.execute("SELECT * FROM users WHERE student_id=?",(student_id.strip(),)).fetchone(); conn.close(); return row
+
+
+def authenticate_student_credentials(student_id,password):
+    row=user_by_student_id(student_id)
+    if row is None: return False,"No account found with that Student ID."
+    if not verify_password(password,row["password_hash"]): return False,"Incorrect password."
+    if row["is_suspended"]: return False,"This account has been suspended. Contact an administrator."
+    if not row["verified"]: return False,"Please complete email and phone verification before logging in."
+    return True,dict(row)
+
+
+def login_user(email,password):
+    row=user_by_email(email.strip().lower())
+    if row is None: return False,"No account found with that email."
+    if not verify_password(password,row["password_hash"]): return False,"Incorrect password."
+    if row["is_suspended"]: return False,"This account has been suspended. Contact an administrator."
+    return True,dict(row)
+
+
 # 5. DEMO DATA SEEDING
 # =============================================================================
 
@@ -1051,6 +1091,10 @@ CUSTOM_CSS = """
     border-radius: 12px;
 }
 
+.uh-auth-tabs { display:grid; grid-template-columns:1fr 1fr; gap:.25rem; background:#f1f5f9; border-radius:12px; padding:.25rem; margin-bottom:1rem; text-align:center; font-size:.75rem; font-weight:800; color:#64748b; }
+.uh-auth-tabs span { padding:.58rem .4rem; border-radius:9px; }
+.uh-auth-tabs .uh-tab-active { background:#fff; color:#0b1f3a; box-shadow:0 2px 8px rgba(11,31,58,.10); }
+
 .uh-otp-note {
     text-align: center;
     padding: .7rem .8rem;
@@ -1076,16 +1120,27 @@ CUSTOM_CSS = """
 }
 
 @media (max-width: 640px) {
-    .uh-auth-shell {
-        min-height: calc(100vh - 1rem);
-        padding: 1rem .55rem 2rem;
-        align-items: flex-start;
-    }
-    .uh-auth-content { width: 100%; padding-top: 1.2rem; }
-    .uh-auth-card { padding: 1.15rem; border-radius: 20px; }
-    .uh-auth-logo-mark { width: 56px; height: 56px; border-radius: 17px; font-size: 1.75rem; }
-    .uh-auth-tagline { font-size: .96rem; }
-    .uh-auth-subtitle { font-size: .79rem; }
+    .uh-auth-shell { min-height: calc(100dvh - 1rem); padding: .55rem .5rem .75rem; align-items: center; }
+    .uh-auth-content { width: 100%; padding-top: 0; }
+    .uh-auth-hero { margin-bottom: .65rem; }
+    .uh-auth-card { padding: .95rem; border-radius: 18px; }
+    .uh-auth-logo-mark { width: 50px; height: 50px; border-radius: 16px; font-size: 1.55rem; margin-bottom: .35rem; }
+    .uh-auth-hero h1 { font-size: 1.95rem !important; }
+    .uh-auth-tagline { font-size: .9rem; margin-top: .4rem; }
+    .uh-auth-subtitle { font-size: .74rem; }
+    .uh-auth-card h2 { font-size: 1.15rem !important; }
+    .uh-auth-card-copy { font-size: .8rem; margin-bottom: .75rem; }
+    .stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input { min-height: 43px !important; }
+    .stApp:has(.uh-auth-shell) button { min-height: 43px !important; }
+}
+
+@media (min-width: 641px) and (max-height: 820px) {
+    .uh-auth-shell { min-height: calc(100vh - 1rem); padding: .6rem 1rem; }
+    .uh-auth-hero { margin-bottom: .65rem; }
+    .uh-auth-logo-mark { width: 52px; height: 52px; font-size: 1.65rem; }
+    .uh-auth-hero h1 { font-size: 2rem !important; }
+    .uh-auth-tagline { font-size: .9rem; margin: .4rem 0 .2rem; }
+    .uh-auth-card { padding: 1rem; }
 }
 </style>
 """
@@ -1126,269 +1181,160 @@ def status_badge(status):
 # -----------------------------------------------------------------------------
 
 def _render_auth_shell_start():
-    st.markdown('<div class="uh-auth-shell"><div class="uh-auth-content">', unsafe_allow_html=True)
+    st.markdown('<div class="uh-auth-shell"><div class="uh-auth-content">',unsafe_allow_html=True)
 
+def _render_auth_shell_end(): st.markdown('</div></div>',unsafe_allow_html=True)
 
-def _render_auth_shell_end():
-    st.markdown('</div></div>', unsafe_allow_html=True)
-
-
-def _render_auth_hero(label="Your campus. Your community. Someone can help."):
-    st.markdown(
-        f"""
-        <div class="uh-auth-hero">
-            <div class="uh-auth-logo-mark">🎓</div>
-            <h1>UNI HELP</h1>
-            <p class="uh-auth-tagline">{label}</p>
-            <p class="uh-auth-subtitle">Borrow • Deliver • Assist • Earn</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
+def _render_auth_hero():
+    st.markdown("""<div class="uh-auth-hero"><div class="uh-auth-logo-mark">🎓</div><h1>UNI HELP</h1><p class="uh-auth-tagline">Your campus. Your community.<br>Someone can help.</p><p class="uh-auth-subtitle">Borrow • Deliver • Assist • Earn</p></div>""",unsafe_allow_html=True)
 
 def _set_user_and_route(user):
-    st.session_state["user"] = user
-    st.session_state["nav"] = "Admin" if user.get("role") == "admin" else "Dashboard"
-    st.rerun()
+    st.session_state["user"]=user; st.session_state["nav"]="Admin" if user.get("role")=="admin" else "Dashboard"; st.rerun()
 
+def _send_student_login_sms(student_id,password):
+    if not SMS_CONFIGURED: return False,"SMS verification is not configured. Please contact the administrator."
+    ok,result=authenticate_student_credentials(student_id,password)
+    if not ok: return False,result
+    if not normalize_phone(result.get("phone","")): return False,"No valid phone number is registered for this Student ID."
+    if not deliver_sms_otp(result,"LOGIN_SMS_OTP",None,"login"): return False,"Unable to send OTP. Please try again."
+    now=time.time(); st.session_state["login_student_id"]=student_id.strip(); st.session_state["login_otp_resend_at"]=now+SMS_RESEND_SECONDS; return True,"OTP sent successfully."
 
-def _send_login_otp(email):
-    email = email.strip().lower()
-    if not is_valid_email(email):
-        return False, "Please enter a valid email address."
-    user = user_by_email(email)
-    if not user:
-        return False, "No account found with that email. Please create an account first."
-    if user["is_suspended"]:
-        return False, "This account has been suspended. Contact an administrator."
-    if not EMAIL_CONFIGURED:
-        return False, "Unable to send OTP. Please try again later."
-    sent = deliver_otp(dict(user), "LOGIN_OTP", None, "login")
-    if sent:
-        st.session_state["login_otp_email"] = email
-        st.session_state["login_otp_sent_at"] = time.time()
-        st.session_state["login_otp_resend_at"] = time.time() + 30
-        return True, "OTP sent successfully."
-    return False, "Unable to send OTP. Please try again."
+def _verify_student_login_sms(student_id,password,otp):
+    ok,result=authenticate_student_credentials(student_id,password)
+    if not ok: return False,result
+    ok,msg=verify_otp(result["id"],"LOGIN_SMS_OTP",None,otp); return (True,result) if ok else (False,msg)
 
+def _send_registration_otps(user_id):
+    user=user_by_id(user_id)
+    if not user: return False,"Unable to start verification. Please try again."
+    if not EMAIL_CONFIGURED or not SMS_CONFIGURED: return False,"Email and SMS verification are not fully configured. Please contact the administrator."
+    if not deliver_otp(user,"EMAIL_VERIFICATION",None,"email verification"): return False,"Unable to send verification OTPs. Please try again."
+    if not deliver_sms_otp(user,"PHONE_VERIFICATION",None,"phone verification"): return False,"Unable to send verification OTPs. Please try again."
+    st.session_state["registration_resend_at"]=time.time()+SMS_RESEND_SECONDS; return True,"Verification OTPs sent successfully."
 
-def _verify_login_otp(email, otp_input):
-    email = email.strip().lower()
-    sent_email = st.session_state.get("login_otp_email", "").strip().lower()
-    if not sent_email or email != sent_email:
-        return False, "Please use the same email address that requested the OTP."
-    user = user_by_email(email)
-    if not user:
-        return False, "No account found with that email."
-    ok, msg = verify_otp(user["id"], "LOGIN_OTP", None, otp_input)
-    if ok:
-        return True, dict(user)
-    return False, msg
-
+def _registration_verify(user,email_otp,phone_otp):
+    ok,msg=verify_otp(user["id"],"EMAIL_VERIFICATION",None,email_otp)
+    if not ok: return False,"OTP expired. Please request new OTPs." if "expired" in msg.lower() else "Invalid email OTP. Please try again."
+    ok,msg=verify_otp(user["id"],"PHONE_VERIFICATION",None,phone_otp)
+    if not ok: return False,"OTP expired. Please request new OTPs." if "expired" in msg.lower() else "Invalid phone OTP. Please try again."
+    return True,"Both OTPs verified successfully."
 
 def render_landing():
-    _render_auth_shell_start()
-    _render_auth_hero()
+    _render_auth_shell_start(); _render_auth_hero()
     with st.container(border=True):
-        st.markdown(
-            "<h2>Welcome to UNI HELP</h2>"
-            "<p class='uh-auth-card-copy'>Connect with your campus community</p>",
-            unsafe_allow_html=True,
-        )
-        if st.button("Continue with Email", use_container_width=True, type="primary", key="landing_email"):
-            st.session_state["auth_mode"] = "Login"
-            st.rerun()
-        st.markdown('<div class="uh-auth-footnote">New to UNI HELP?</div>', unsafe_allow_html=True)
-        if st.button("Create an account", use_container_width=True, key="landing_register"):
-            st.session_state["auth_mode"] = "Register"
-            st.rerun()
-        st.markdown('<div class="uh-auth-divider"><span>Platform access</span></div>', unsafe_allow_html=True)
-        if st.button("Admin Login", use_container_width=True, key="landing_admin"):
-            st.session_state["auth_mode"] = "AdminLogin"
-            st.rerun()
+        st.markdown('<div class="uh-auth-tabs"><span class="uh-tab-active">LOGIN</span><span>CREATE ACCOUNT</span></div>',unsafe_allow_html=True)
+        st.markdown('<h2>Welcome back</h2><p class="uh-auth-card-copy">Sign in with your Student ID and phone verification.</p>',unsafe_allow_html=True)
+        sid=st.text_input("Student ID",placeholder="Enter your Student ID",key="auth_student_id")
+        pw=st.text_input("Password",type="password",placeholder="Enter your password",key="auth_student_password")
+        if st.button("Send OTP",use_container_width=True,type="primary",key="auth_send_sms"):
+            with st.spinner("Sending secure SMS OTP…"): ok,msg=_send_student_login_sms(sid,pw)
+            if ok: st.success(msg); st.rerun()
+            else: st.error(msg)
+        if st.session_state.get("login_student_id"):
+            otp=st.text_input("Phone OTP",max_chars=6,placeholder="••••••",key="auth_login_otp")
+            remaining=max(0,int(st.session_state.get("login_otp_resend_at",0)-time.time()))
+            if st.button("Verify & Login",use_container_width=True,type="primary",key="auth_verify_sms"):
+                with st.spinner("Verifying OTP…"): ok,result=_verify_student_login_sms(sid or st.session_state.get("login_student_id",""),pw,otp)
+                if ok: st.success("Login successful. Welcome back!"); _set_user_and_route(result)
+                else: st.error("OTP expired. Please request a new one." if "expired" in result.lower() else "Invalid OTP. Please try again.")
+            if st.button("Resend OTP",disabled=remaining>0,use_container_width=True,key="auth_resend_sms"):
+                with st.spinner("Sending secure SMS OTP…"): ok,msg=_send_student_login_sms(sid or st.session_state.get("login_student_id",""),pw)
+                if ok: st.success(msg); st.rerun()
+                else: st.error(msg)
+            if remaining>0: st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>',unsafe_allow_html=True)
+        st.markdown('<div class="uh-auth-divider"><span>New to UNI HELP?</span></div>',unsafe_allow_html=True)
+        if st.button("Create an account",use_container_width=True,key="auth_create"):
+            st.session_state["auth_mode"]="Register"; st.rerun()
+        if st.button("Admin Login",use_container_width=True,key="auth_admin"):
+            st.session_state["auth_mode"]="AdminLogin"; st.rerun()
     _render_auth_shell_end()
-
 
 def render_register():
-    _render_auth_shell_start()
-    _render_auth_hero("Create your campus account")
+    _render_auth_shell_start(); _render_auth_hero()
     with st.container(border=True):
-        st.markdown(
-            "<h2>Create your account</h2>"
-            "<p class='uh-auth-card-copy'>Use any valid email address. You will receive a real verification OTP.</p>",
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div class="uh-auth-tabs"><span>LOGIN</span><span class="uh-tab-active">CREATE ACCOUNT</span></div>',unsafe_allow_html=True)
+        st.markdown('<h2>Create your account</h2><p class="uh-auth-card-copy">Use any valid email and a phone number that can receive SMS.</p>',unsafe_allow_html=True)
         with st.form("register_form"):
-            full_name = st.text_input("Full name")
-            email = st.text_input("Email address", placeholder="you@example.com")
-            phone = st.text_input("Phone number")
-            student_id = st.text_input("Student ID")
-            password = st.text_input("Password", type="password")
-            password2 = st.text_input("Confirm password", type="password")
-            submitted = st.form_submit_button("Create account", use_container_width=True, type="primary")
-            if submitted:
-                if password != password2:
-                    st.error("Passwords do not match.")
-                elif not is_valid_email(email):
-                    st.error("Please enter a valid email address.")
-                elif not EMAIL_CONFIGURED:
-                    st.error("Unable to send OTP. Please try again later.")
-                else:
-                    with st.spinner("Creating account and sending OTP…"):
-                        ok, result = register_user(full_name, email, phone, student_id, password)
-                    if ok:
-                        st.session_state["pending_verify_email"] = email.strip().lower()
-                        st.session_state["auth_mode"] = "Verify"
-                        st.success("OTP sent successfully. Check your email to verify your account.")
-                        st.rerun()
-                    else:
-                        st.error(result)
-    if st.button("← Back to login", use_container_width=True, key="register_back"):
-        st.session_state["auth_mode"] = "Login"
-        st.rerun()
+            c1,c2=st.columns(2)
+            with c1:
+                full_name=st.text_input("Full Name",placeholder="Your full name"); email=st.text_input("Email",placeholder="you@example.com"); student_id=st.text_input("Student ID",placeholder="Your Student ID")
+            with c2:
+                phone=st.text_input("Phone Number",placeholder="+91 9876543210"); password=st.text_input("Password",type="password",placeholder="At least 6 characters"); password2=st.text_input("Confirm Password",type="password",placeholder="Repeat your password")
+            submitted=st.form_submit_button("Send Verification OTPs",use_container_width=True,type="primary")
+        if submitted:
+            if password!=password2: st.error("Passwords do not match.")
+            elif not is_valid_email(email): st.error("Please enter a valid email address.")
+            elif not is_valid_phone(phone): st.error("Please enter a valid phone number with country code.")
+            elif not EMAIL_CONFIGURED or not SMS_CONFIGURED: st.error("Email and SMS verification are not fully configured. Please contact the administrator.")
+            else:
+                with st.spinner("Sending verification OTPs…"):
+                    ok,result=register_user(full_name,email,phone,student_id,password)
+                    if ok: ok,msg=_send_registration_otps(result)
+                    else: msg=result
+                if ok: st.session_state["pending_registration_user_id"]=result; st.session_state["auth_mode"]="RegisterVerify"; st.success(msg); st.rerun()
+                else: st.error(msg)
+        if st.button("← Back to login",use_container_width=True,key="register_back"):
+            st.session_state["auth_mode"]="Home"; st.rerun()
     _render_auth_shell_end()
 
+def render_register_verify():
+    _render_auth_shell_start(); _render_auth_hero()
+    with st.container(border=True):
+        st.markdown('<h2>Verify your account</h2><p class="uh-auth-card-copy">Enter both codes sent to your email and phone.</p>',unsafe_allow_html=True)
+        uid=st.session_state.get("pending_registration_user_id"); user=user_by_id(uid) if uid else None
+        if not user: st.error("Verification session not found. Please create your account again.")
+        else:
+            email_otp=st.text_input("Email OTP",max_chars=6,placeholder="••••••",key="reg_email_otp"); phone_otp=st.text_input("Phone OTP",max_chars=6,placeholder="••••••",key="reg_phone_otp")
+            remaining=max(0,int(st.session_state.get("registration_resend_at",0)-time.time()))
+            if st.button("Verify & Create Account",use_container_width=True,type="primary",key="reg_verify"):
+                with st.spinner("Verifying OTPs…"): ok,msg=_registration_verify(user,email_otp,phone_otp)
+                if ok:
+                    conn=get_conn(); conn.execute("UPDATE users SET verified=1 WHERE id=?",(user["id"],)); conn.commit(); conn.close(); notify(user["id"],"Welcome to UNI HELP! Your email and phone have been verified."); st.success("Account created successfully! You can now log in."); st.session_state.pop("pending_registration_user_id",None); st.session_state["auth_mode"]="Home"; st.rerun()
+                else: st.error(msg)
+            if st.button("Resend OTPs",disabled=remaining>0,use_container_width=True,key="reg_resend"):
+                with st.spinner("Sending verification OTPs…"): ok,msg=_send_registration_otps(user["id"])
+                if ok: st.success(msg); st.rerun()
+                else: st.error(msg)
+            if remaining>0: st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>',unsafe_allow_html=True)
+    _render_auth_shell_end()
 
 def render_verify():
-    _render_auth_shell_start()
-    _render_auth_hero("Verify your email")
+    _render_auth_shell_start(); _render_auth_hero()
     with st.container(border=True):
-        st.markdown(
-            "<h2>Enter your 6-digit OTP</h2>"
-            "<p class='uh-auth-card-copy'>We sent a secure verification code to your email.</p>",
-            unsafe_allow_html=True,
-        )
-        email = st.session_state.get("pending_verify_email", "")
-        email = st.text_input("Email address", value=email, key="verify_email")
-        otp_input = st.text_input("6-digit OTP", max_chars=6, placeholder="••••••", key="verify_otp")
-        now = time.time()
-        resend_at = st.session_state.get("verify_resend_at", 0.0)
-        remaining = max(0, int(resend_at - now))
-        if remaining > 0:
-            st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="uh-otp-note">OTP expires in 5 minutes.</div>', unsafe_allow_html=True)
-        if st.button("Verify OTP", use_container_width=True, type="primary", key="verify_otp_button"):
-            u = user_by_email(email.strip().lower())
-            if not u:
-                st.error("No account found with that email.")
+        st.markdown('<h2>Verify your email</h2><p class="uh-auth-card-copy">Enter the 6-digit code sent to your email.</p>',unsafe_allow_html=True)
+        email=st.session_state.get("pending_verify_email",""); email=st.text_input("Email address",value=email,key="verify_email"); otp=st.text_input("Email OTP",max_chars=6,placeholder="••••••",key="verify_otp")
+        if st.button("Verify OTP",use_container_width=True,type="primary",key="verify_otp_button"):
+            u=user_by_email(email.strip().lower())
+            if not u: st.error("No account found with that email.")
             else:
-                with st.spinner("Verifying OTP…"):
-                    ok, msg = verify_otp(u["id"], "EMAIL_VERIFICATION", None, otp_input)
+                with st.spinner("Verifying OTP…"): ok,msg=verify_otp(u["id"],"EMAIL_VERIFICATION",None,otp)
                 if ok:
-                    conn = get_conn()
-                    conn.execute("UPDATE users SET verified = 1 WHERE id = ?", (u["id"],))
-                    conn.commit()
-                    conn.close()
-                    notify(u["id"], "Your email has been verified. Welcome to the verified campus network!")
-                    st.success("Email verified successfully. Welcome to UNI HELP!")
-                    st.session_state["auth_mode"] = "Login"
-                    st.rerun()
-                else:
-                    st.error("OTP expired. Please request a new one." if "expired" in msg.lower() else "Invalid OTP. Please try again.")
-        if st.button("Resend OTP", disabled=remaining > 0, use_container_width=True, key="resend_otp_button"):
-            u = user_by_email(email.strip().lower())
-            if not u:
-                st.error("No account found with that email.")
-            elif not EMAIL_CONFIGURED:
-                st.error("Unable to send OTP. Please try again later.")
-            elif deliver_otp(u, "EMAIL_VERIFICATION", None, "email verification"):
-                st.session_state["verify_resend_at"] = time.time() + 30
-                st.success("OTP sent successfully.")
-                st.rerun()
-            else:
-                st.error("Unable to send OTP. Please try again.")
-    if st.button("← Back to login", use_container_width=True, key="verify_back"):
-        st.session_state["auth_mode"] = "Login"
-        st.rerun()
+                    conn=get_conn(); conn.execute("UPDATE users SET verified=1 WHERE id=?",(u["id"],)); conn.commit(); conn.close(); notify(u["id"],"Your email has been verified."); st.success("Email verified successfully."); st.session_state["auth_mode"]="Home"; st.rerun()
+                else: st.error("OTP expired. Please request a new one." if "expired" in msg.lower() else "Invalid OTP. Please try again.")
+        if st.button("Resend OTP",use_container_width=True,key="verify_resend"):
+            u=user_by_email(email.strip().lower())
+            if not u or not EMAIL_CONFIGURED: st.error("Unable to send OTP. Please try again later.")
+            elif deliver_otp(u,"EMAIL_VERIFICATION",None,"email verification"): st.success("OTP sent successfully."); st.rerun()
+            else: st.error("Unable to send OTP. Please try again.")
     _render_auth_shell_end()
 
-
-def render_login():
-    _render_auth_shell_start()
-    _render_auth_hero()
-    with st.container(border=True):
-        st.markdown(
-            "<h2>Welcome to UNI HELP</h2>"
-            "<p class='uh-auth-card-copy'>Sign in securely with a one-time email code.</p>",
-            unsafe_allow_html=True,
-        )
-        email = st.text_input("Email address", placeholder="you@example.com", key="login_email")
-        otp_sent_at = st.session_state.get("login_otp_sent_at", 0.0)
-        resend_at = st.session_state.get("login_otp_resend_at", 0.0)
-        remaining = max(0, int(resend_at - time.time()))
-        if st.button("Send OTP", use_container_width=True, type="primary", key="send_login_otp"):
-            with st.spinner("Sending OTP…"):
-                ok, msg = _send_login_otp(email)
-            if ok:
-                st.success(msg)
-                st.rerun()
-            else:
-                st.error(msg)
-        otp = st.text_input("6-digit OTP", max_chars=6, placeholder="••••••", key="login_otp")
-        if st.button("Verify OTP & Continue", use_container_width=True, type="primary", key="verify_login_otp"):
-            if not st.session_state.get("login_otp_email"):
-                st.error("Please request an OTP first.")
-            else:
-                with st.spinner("Verifying OTP…"):
-                    ok, result = _verify_login_otp(email or st.session_state.get("login_otp_email", ""), otp)
-                if ok:
-                    st.success("Login successful. Welcome back!")
-                    _set_user_and_route(result)
-                else:
-                    st.error("OTP expired. Please request a new one." if "expired" in result.lower() else "Invalid OTP. Please try again.")
-        if st.button("Resend OTP", disabled=remaining > 0, use_container_width=True, key="resend_login_otp"):
-            with st.spinner("Sending OTP…"):
-                ok, msg = _send_login_otp(email or st.session_state.get("login_otp_email", ""))
-            if ok:
-                st.success(msg)
-                st.rerun()
-            else:
-                st.error(msg)
-        if remaining > 0:
-            st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>', unsafe_allow_html=True)
-        st.markdown('<div class="uh-auth-footnote">New to UNI HELP?</div>', unsafe_allow_html=True)
-        if st.button("Create an account", use_container_width=True, key="login_register"):
-            st.session_state["auth_mode"] = "Register"
-            st.rerun()
-        if st.button("← Back", use_container_width=True, key="login_back"):
-            st.session_state["auth_mode"] = "Home"
-            st.rerun()
-    _render_auth_shell_end()
-
+def render_login(): render_landing()
 
 def render_admin_login():
-    _render_auth_shell_start()
-    _render_auth_hero("Secure platform administration")
+    _render_auth_shell_start(); _render_auth_hero()
     with st.container(border=True):
-        st.markdown(
-            "<h2>Admin Login</h2>"
-            "<p class='uh-auth-card-copy'>Platform management access only.</p>",
-            unsafe_allow_html=True,
-        )
+        st.markdown('<h2>Admin Login</h2><p class="uh-auth-card-copy">Secure platform management access only.</p>',unsafe_allow_html=True)
         with st.form("admin_login_form"):
-            email = st.text_input("Admin email", key="admin_login_email")
-            password = st.text_input("Admin password", type="password", key="admin_login_password")
-            submitted = st.form_submit_button("Sign in as Admin", use_container_width=True, type="primary")
-            if submitted:
-                with st.spinner("Signing in…"):
-                    ok, result = login_user(email, password)
-                if ok and result.get("role") == "admin":
-                    st.session_state["user"] = result
-                    st.session_state["nav"] = "Admin"
-                    st.rerun()
-                elif ok:
-                    st.error("This account does not have administrator access.")
-                else:
-                    st.error("Invalid admin credentials.")
-    if st.button("← Back", use_container_width=True, key="admin_login_back"):
-        st.session_state["auth_mode"] = "Home"
-        st.rerun()
+            email=st.text_input("Admin email",key="admin_login_email"); password=st.text_input("Admin password",type="password",key="admin_login_password"); submitted=st.form_submit_button("Sign in as Admin",use_container_width=True,type="primary")
+        if submitted:
+            with st.spinner("Signing in securely…"): ok,result=login_user(email,password)
+            if ok and result.get("role")=="admin": _set_user_and_route(result)
+            elif ok: st.error("This account does not have administrator access.")
+            else: st.error("Invalid admin credentials.")
+        if st.button("← Back to login",use_container_width=True,key="admin_login_back"): st.session_state["auth_mode"]="Home"; st.rerun()
     _render_auth_shell_end()
 
 
-# -----------------------------------------------------------------------------
 # 6.2 DASHBOARD
 # -----------------------------------------------------------------------------
 
@@ -2210,6 +2156,11 @@ def render_admin(user):
         )
 
     st.markdown("## 🛡 Admin Dashboard")
+    if not EMAIL_CONFIGURED or not SMS_CONFIGURED:
+        missing=[]
+        if not EMAIL_CONFIGURED: missing.append("email SMTP")
+        if not SMS_CONFIGURED: missing.append("SMS/Twilio")
+        st.warning("Authentication configuration incomplete: " + ", ".join(missing) + ".")
     conn = get_conn()
     total_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student'").fetchone()["c"]
     verified_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND verified=1").fetchone()["c"]
@@ -2357,6 +2308,8 @@ def main():
         mode = st.session_state.get("auth_mode", "Home")
         if mode == "Register":
             render_register()
+        elif mode == "RegisterVerify":
+            render_register_verify()
         elif mode == "Login":
             render_login()
         elif mode == "AdminLogin":
