@@ -24,12 +24,15 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import qrcode
 from dotenv import load_dotenv
 
+# MSG91 is used for real SMS OTP delivery.
+# Credentials are read only from Streamlit Secrets; nothing is hard-coded.
 try:
-    from twilio.rest import Client as TwilioClient
-    TWILIO_SDK_AVAILABLE = True
+    import urllib.request
+    import urllib.parse
+    import json
+    MSG91_HTTP_AVAILABLE = True
 except ImportError:
-    TwilioClient = None
-    TWILIO_SDK_AVAILABLE = False
+    MSG91_HTTP_AVAILABLE = False
 
 # =============================================================================
 # 0. CONFIG / ENVIRONMENT
@@ -66,19 +69,15 @@ except Exception:
 EMAIL_CONFIGURED = bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSWORD)
 
 try:
-    TWILIO_ACCOUNT_SID = str(st.secrets.get("TWILIO_ACCOUNT_SID", "")).strip()
-    TWILIO_AUTH_TOKEN = str(st.secrets.get("TWILIO_AUTH_TOKEN", "")).strip()
-    TWILIO_VERIFY_SERVICE_SID = str(st.secrets.get("TWILIO_VERIFY_SERVICE_SID", "")).strip()
+    MSG91_AUTHKEY = str(st.secrets.get("MSG91_AUTHKEY", "")).strip()
+    MSG91_OTP_TEMPLATE_ID = str(st.secrets.get("MSG91_OTP_TEMPLATE_ID", "")).strip()
 except Exception:
-    TWILIO_ACCOUNT_SID = ""
-    TWILIO_AUTH_TOKEN = ""
-    TWILIO_VERIFY_SERVICE_SID = ""
-SMS_CONFIGURED = bool(
-    TWILIO_SDK_AVAILABLE
-    and TWILIO_ACCOUNT_SID
-    and TWILIO_AUTH_TOKEN
-    and TWILIO_VERIFY_SERVICE_SID
-)
+    MSG91_AUTHKEY = ""
+    MSG91_OTP_TEMPLATE_ID = ""
+
+# MSG91's OTP API needs an approved OTP template. For Indian numbers this is
+# especially important because SMS delivery follows DLT/template requirements.
+SMS_CONFIGURED = bool(MSG91_HTTP_AVAILABLE and MSG91_AUTHKEY and MSG91_OTP_TEMPLATE_ID)
 SMS_RESEND_SECONDS = 30
 
 MIN_REWARD = float(os.getenv("MIN_REWARD", "0"))
@@ -698,67 +697,113 @@ def normalize_phone(phone):
 def is_valid_phone(phone): return bool(normalize_phone(phone))
 
 
-def _twilio_verify_client():
-    """Return the configured Twilio Verify client without exposing secrets."""
-    if not SMS_CONFIGURED:
-        return None
-    return TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+def _msg91_api_request(url, method="GET"):
+    """Call MSG91 without exposing the auth key to the client/UI."""
+    req = urllib.request.Request(
+        url,
+        method=method,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=20) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {"raw": raw}
 
 
-def send_twilio_verify_sms(to_phone):
-    """Start a real Twilio Verify SMS verification. No OTP is generated or stored locally."""
+def _msg91_phone(user_row):
+    try:
+        value = user_row["phone"]
+    except Exception:
+        value = user_row.get("phone", "") if hasattr(user_row, "get") else ""
+    return normalize_phone(value or "")
+
+
+def send_msg91_otp(to_phone):
+    """Generate/send an OTP through MSG91. MSG91 owns OTP generation and verification."""
     if not SMS_CONFIGURED:
-        st.session_state["_last_sms_error"] = "Twilio Verify is not configured."
+        st.session_state["_last_sms_error"] = (
+            "MSG91 SMS is not configured. Add MSG91_AUTHKEY and "
+            "MSG91_OTP_TEMPLATE_ID to Streamlit Secrets."
+        )
         return False
+
     phone = normalize_phone(to_phone)
     if not phone:
         st.session_state["_last_sms_error"] = "Invalid phone number."
         return False
+
+    # MSG91 expects the mobile number without the leading + in this API.
+    mobile = phone.lstrip("+")
+    params = urllib.parse.urlencode({
+        "template_id": MSG91_OTP_TEMPLATE_ID,
+        "mobile": mobile,
+        "otp_length": "6",
+        "otp_expiry": str(OTP_EXPIRY_MINUTES),
+    })
+    url = f"https://control.msg91.com/api/v5/otp?{params}"
+
     try:
-        client = _twilio_verify_client()
-        verification = (
-            client.verify.v2
-            .services(TWILIO_VERIFY_SERVICE_SID)
-            .verifications.create(to=phone, channel="sms")
+        # Authkey is sent as a header rather than embedded in the URL.
+        req = urllib.request.Request(
+            url,
+            method="POST",
+            headers={
+                "authkey": MSG91_AUTHKEY,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+            data=b"{}",
         )
-        return getattr(verification, "status", "") in {"pending", "approved"}
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        success = str(data.get("type", "")).lower() == "success" or bool(data.get("request_id"))
+        if not success:
+            st.session_state["_last_sms_error"] = str(data.get("message") or data.get("msg") or "MSG91 rejected the OTP request.")
+        else:
+            st.session_state.pop("_last_sms_error", None)
+        return success
     except Exception as exc:
-        # Keep provider details server-side; never surface credentials or raw API responses.
         st.session_state["_last_sms_error"] = str(exc)
         return False
 
 
-def verify_twilio_sms(to_phone, code):
-    """Check a user-entered code against Twilio Verify."""
+def verify_msg91_otp(to_phone, code):
+    """Verify an OTP against MSG91; the OTP is never stored by UNI HELP."""
     if not SMS_CONFIGURED:
-        return False, "SMS verification is not configured. Please contact the administrator."
+        return False, "MSG91 SMS verification is not configured. Please contact the administrator."
     phone = normalize_phone(to_phone)
     code = str(code or "").strip()
     if not phone:
         return False, "No valid mobile number is registered."
     if not re.fullmatch(r"\d{6}", code):
         return False, "Please enter the 6-digit OTP."
+
+    params = urllib.parse.urlencode({"mobile": phone.lstrip("+"), "otp": code})
+    url = f"https://control.msg91.com/api/v5/otp/verify?{params}"
     try:
-        client = _twilio_verify_client()
-        check = (
-            client.verify.v2
-            .services(TWILIO_VERIFY_SERVICE_SID)
-            .verification_checks.create(to=phone, code=code)
+        req = urllib.request.Request(
+            url,
+            method="GET",
+            headers={"authkey": MSG91_AUTHKEY, "Accept": "application/json"},
         )
-        status = getattr(check, "status", "")
-        if status == "approved":
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        message = str(data.get("message", "")).lower()
+        if "verified success" in message or "success" in message or data.get("type") == "success":
             return True, "Verified successfully."
-        if status == "pending":
-            return False, "Invalid OTP. Please try again."
-        return False, "OTP verification failed. Please request a new OTP."
+        return False, str(data.get("message") or data.get("msg") or "Invalid OTP. Please try again.")
     except Exception as exc:
         st.session_state["_last_sms_error"] = str(exc)
         return False, "Unable to verify OTP. Please try again."
 
 
 def deliver_sms_otp(user_row, purpose, reference_id=None, context_label="verification"):
-    """Start a Twilio Verify SMS challenge. Twilio owns OTP generation, expiry and verification."""
-    return send_twilio_verify_sms(user_row.get("phone") or "")
+    """Start an MSG91 SMS OTP challenge."""
+    return send_msg91_otp(_msg91_phone(user_row))
 
 
 def register_user(full_name,email,phone,student_id,password):
@@ -889,6 +934,17 @@ st.set_page_config(page_title="UNI HELP", page_icon="🎓", layout="wide")
 CUSTOM_CSS = """
 <style>
 :root{--uh-navy:#0b1736;--uh-blue:#2563eb;--uh-blue2:#4f7cff;--uh-orange:#f97316;--uh-bg:#f5f8fc;--uh-text:#10203f;--uh-muted:#64748b;--uh-line:#dbe4f0}
+.stApp{background:#f6f8fc;}
+.block-container{max-width:1180px!important;padding-top:1.35rem!important;padding-bottom:3rem!important;padding-left:2rem!important;padding-right:2rem!important;}
+[data-testid="stSidebar"]{border-right:1px solid #e2e8f0;background:#ffffff;}
+[data-testid="stSidebar"]>div:first-child{padding-top:1rem;}
+[data-testid="stSidebar"] .stRadio label{font-weight:700;color:#334155;}
+.uh-page-header{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;margin:.15rem 0 1.2rem;padding-bottom:.9rem;border-bottom:1px solid #e2e8f0;}
+.uh-page-header h2{margin:0;color:var(--uh-navy);font-size:1.7rem;letter-spacing:-.035em;}
+.uh-page-header p{margin:.25rem 0 0;color:#64748b;font-size:.82rem;}
+[data-testid="stMetric"]{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:.75rem .85rem;box-shadow:0 5px 18px rgba(15,23,42,.045);}
+[data-testid="stVerticalBlockBorderWrapper"]{border-color:#e2e8f0!important;border-radius:16px!important;}
+.stButton>button,.stFormSubmitButton>button{border-radius:10px!important;font-weight:750!important;}
 .stApp:has(.uh-auth-shell){background:radial-gradient(circle at 12% 8%,rgba(37,99,235,.08),transparent 28%),radial-gradient(circle at 88% 92%,rgba(249,115,22,.07),transparent 24%),var(--uh-bg)}
 .uh-auth-shell{min-height:calc(100dvh - 1.2rem);display:flex;align-items:center;justify-content:center;padding:.55rem 1rem;box-sizing:border-box;overflow:hidden}
 .uh-auth-content{width:min(100%,440px);margin:auto}
@@ -918,7 +974,8 @@ CUSTOM_CSS = """
 .uh-auth-back button{color:#64748b!important}
 .uh-auth-status{padding:.48rem .6rem;border-radius:9px;font-size:.73rem;font-weight:650;margin:.35rem 0}.uh-auth-status.ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0}.uh-auth-status.err{background:#fff1f2;color:#be123c;border:1px solid #fecdd3}
 @keyframes uhFade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}@keyframes uhLogo{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}@keyframes uhCard{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-@media(max-width:640px){.uh-auth-shell{min-height:100dvh;padding:.35rem .45rem;overflow:visible}.uh-auth-content{width:min(100%,410px)}.uh-auth-hero{margin-bottom:.5rem}.uh-auth-logo-mark{width:42px;height:42px;border-radius:13px;font-size:1.25rem}.uh-auth-hero h1{font-size:1.85rem!important}.uh-auth-tagline{font-size:.84rem}.uh-auth-subtitle{font-size:.69rem}.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{padding:.72rem!important;border-radius:17px!important}.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{min-height:39px!important}.stApp:has(.uh-auth-shell) button{min-height:40px!important}}
+@media(max-width:900px){.block-container{max-width:100%!important;padding-left:1rem!important;padding-right:1rem!important;}}
+@media(max-width:640px){.block-container{padding-top:.8rem!important;padding-left:.7rem!important;padding-right:.7rem!important}.uh-page-header h2{font-size:1.35rem}.uh-auth-shell{min-height:100dvh;padding:.35rem .45rem;overflow:visible}.uh-auth-content{width:min(100%,410px)}.uh-auth-hero{margin-bottom:.5rem}.uh-auth-logo-mark{width:42px;height:42px;border-radius:13px;font-size:1.25rem}.uh-auth-hero h1{font-size:1.85rem!important}.uh-auth-tagline{font-size:.84rem}.uh-auth-subtitle{font-size:.69rem}.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{padding:.72rem!important;border-radius:17px!important}.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{min-height:39px!important}.stApp:has(.uh-auth-shell) button{min-height:40px!important}}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -991,7 +1048,7 @@ def _send_student_login_sms(student_id, password):
     if not phone:
         return False, "No valid mobile number is registered for this Student ID."
     if not deliver_sms_otp(result, "LOGIN_SMS_OTP", None, "login"):
-        return False, "Unable to send OTP. Please try again."
+        return False, st.session_state.get("_last_sms_error") or "Unable to send OTP. Please try again."
     st.session_state["login_student_id"] = student_id.strip()
     st.session_state["login_otp_resend_at"] = time.time() + SMS_RESEND_SECONDS
     return True, "OTP sent successfully."
@@ -1001,7 +1058,7 @@ def _verify_student_login_sms(student_id, password, otp):
     ok, result = authenticate_student_credentials(student_id, password)
     if not ok:
         return False, result
-    ok, msg = verify_twilio_sms(result.get("phone") or "", otp)
+    ok, msg = verify_msg91_otp(result.get("phone") or "", otp)
     return (True, result) if ok else (False, msg)
 
 
@@ -1087,7 +1144,7 @@ def render_landing():
             st.session_state["auth_mode"] = "AdminLogin"
             st.rerun()
         if not EMAIL_CONFIGURED or not SMS_CONFIGURED:
-            missing = " and ".join(x for x, configured in (("email", EMAIL_CONFIGURED), ("SMS", SMS_CONFIGURED)) if not configured)
+            missing = " and ".join(x for x, configured in (("email", EMAIL_CONFIGURED), ("MSG91 SMS", SMS_CONFIGURED)) if not configured)
             st.markdown(f'<div class="uh-auth-demo">Configuration notice • {missing} service is not configured</div>', unsafe_allow_html=True)
     _render_auth_shell_end()
 
@@ -1170,7 +1227,7 @@ def render_register():
                     st.text_input("Mobile OTP", max_chars=6, placeholder="Enter 6-digit SMS OTP", key="reg_phone_otp")
                     if st.button("Verify Mobile", use_container_width=True, type="primary", key="reg_verify_phone"):
                         with st.spinner("Verifying mobile…"):
-                            ok, msg = verify_twilio_sms(user.get("phone") or "", st.session_state.get("reg_phone_otp", ""))
+                            ok, msg = verify_msg91_otp(user.get("phone") or "", st.session_state.get("reg_phone_otp", ""))
                         if ok:
                             st.session_state["registration_phone_verified"] = True
                             st.success("Mobile verified successfully.")
@@ -1269,7 +1326,11 @@ def render_admin_login():
 # -----------------------------------------------------------------------------
 
 def render_dashboard(user):
-    st.markdown(f"## Welcome, {user['full_name']} 👋")
+    st.markdown(
+        f'<div class="uh-page-header"><div><h2>Welcome back, {user["full_name"]} 👋</h2>'
+        '<p>Your campus help hub — requests, borrowing, tasks and earnings in one place.</p></div></div>',
+        unsafe_allow_html=True,
+    )
     if not user["verified"]:
         st.warning("Your email isn't verified yet. Some actions may be limited. "
                    "Go to the sidebar → Verify Email.")
@@ -1287,7 +1348,7 @@ def render_dashboard(user):
     ).fetchone()["s"]
     conn.close()
 
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1, m2, m3, m4, m5, m6 = st.columns([1, 1, 1, 1, 1, 1], gap="small")
     m1.metric("Trust Score", f"{user['trust_score']}/100")
     avg_rating = round(user["rating_sum"] / user["rating_count"], 1) if user["rating_count"] else 0
     m2.metric("Rating", f"⭐ {avg_rating}" if user["rating_count"] else "No ratings yet")
@@ -1337,7 +1398,7 @@ def render_dashboard(user):
 # -----------------------------------------------------------------------------
 
 def render_delivery(user):
-    st.markdown("## 📦 Delivery")
+    st.markdown('<div class="uh-page-header"><div><h2>📦 Delivery</h2><p>Move items across campus with verified student helpers.</p></div></div>', unsafe_allow_html=True)
     tabs = st.tabs(["Create Request", "Browse & Accept", "My Requests (as requester)", "My Deliveries (as helper)"])
 
     with tabs[0]:
@@ -1616,7 +1677,7 @@ def render_dispute_form(transaction_type, transaction_id, reporter_id):
 # -----------------------------------------------------------------------------
 
 def render_borrowing(user):
-    st.markdown("## 🤝 Borrowing")
+    st.markdown('<div class="uh-page-header"><div><h2>🤝 Borrowing</h2><p>Lend and borrow useful items from verified students.</p></div></div>', unsafe_allow_html=True)
     tabs = st.tabs(["List an Item", "Browse Items", "My Listings", "My Borrow Requests"])
 
     with tabs[0]:
@@ -1871,7 +1932,7 @@ def _finalize_return(b, borrower_user):
 # -----------------------------------------------------------------------------
 
 def render_microtasks(user):
-    st.markdown("## 🛠 Micro-Tasks")
+    st.markdown('<div class="uh-page-header"><div><h2>🛠 Micro-Tasks</h2><p>Post quick campus jobs or earn by helping others.</p></div></div>', unsafe_allow_html=True)
     tabs = st.tabs(["Create Task", "Browse & Accept", "My Tasks (creator)", "My Tasks (helper)"])
 
     with tabs[0]:
@@ -2006,7 +2067,7 @@ def render_microtasks(user):
 # -----------------------------------------------------------------------------
 
 def render_notifications(user):
-    st.markdown("## 📨 Notifications")
+    st.markdown('<div class="uh-page-header"><div><h2>📨 Notifications</h2><p>Stay updated on your UNI HELP activity.</p></div></div>', unsafe_allow_html=True)
     if st.button("Mark all as read"):
         mark_notifications_read(user["id"])
         st.rerun()
@@ -2020,7 +2081,7 @@ def render_notifications(user):
 
 
 def render_wallet(user):
-    st.markdown("## 💰 Wallet & UniCoins")
+    st.markdown('<div class="uh-page-header"><div><h2>💰 Wallet & UniCoins</h2><p>Track prototype earnings, escrow and community rewards.</p></div></div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     c1.metric("🪙 UniCoins", user["unicoins"])
     conn = get_conn()
@@ -2055,7 +2116,7 @@ def render_wallet(user):
 
 
 def render_disputes(user):
-    st.markdown("## ⚠ Disputes")
+    st.markdown('<div class="uh-page-header"><div><h2>⚠ Disputes</h2><p>Review issues reported on your transactions.</p></div></div>', unsafe_allow_html=True)
     conn = get_conn()
     mine = conn.execute("SELECT * FROM disputes WHERE reporter_id=? ORDER BY id DESC", (user["id"],)).fetchall()
     conn.close()
@@ -2206,7 +2267,7 @@ def render_admin(user):
     if not EMAIL_CONFIGURED or not SMS_CONFIGURED:
         missing=[]
         if not EMAIL_CONFIGURED: missing.append("email SMTP")
-        if not SMS_CONFIGURED: missing.append("SMS/Twilio")
+        if not SMS_CONFIGURED: missing.append("MSG91 SMS (authkey + OTP template)")
         st.warning("Authentication configuration incomplete: " + ", ".join(missing) + ".")
     st.markdown("## 🛡 Admin Dashboard")
     conn = get_conn()
