@@ -24,15 +24,12 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import qrcode
 from dotenv import load_dotenv
 
-# MSG91 is used for real SMS OTP delivery.
-# Credentials are read only from Streamlit Secrets; nothing is hard-coded.
 try:
-    import urllib.request
-    import urllib.parse
-    import json
-    MSG91_HTTP_AVAILABLE = True
+    from twilio.rest import Client as TwilioClient
+    TWILIO_SDK_AVAILABLE = True
 except ImportError:
-    MSG91_HTTP_AVAILABLE = False
+    TwilioClient = None
+    TWILIO_SDK_AVAILABLE = False
 
 # =============================================================================
 # 0. CONFIG / ENVIRONMENT
@@ -69,15 +66,19 @@ except Exception:
 EMAIL_CONFIGURED = bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSWORD)
 
 try:
-    MSG91_AUTHKEY = str(st.secrets.get("MSG91_AUTHKEY", "")).strip()
-    MSG91_OTP_TEMPLATE_ID = str(st.secrets.get("MSG91_OTP_TEMPLATE_ID", "")).strip()
+    TWILIO_ACCOUNT_SID = str(st.secrets.get("TWILIO_ACCOUNT_SID", "")).strip()
+    TWILIO_AUTH_TOKEN = str(st.secrets.get("TWILIO_AUTH_TOKEN", "")).strip()
+    TWILIO_VERIFY_SERVICE_SID = str(st.secrets.get("TWILIO_VERIFY_SERVICE_SID", "")).strip()
 except Exception:
-    MSG91_AUTHKEY = ""
-    MSG91_OTP_TEMPLATE_ID = ""
-
-# MSG91's OTP API needs an approved OTP template. For Indian numbers this is
-# especially important because SMS delivery follows DLT/template requirements.
-SMS_CONFIGURED = bool(MSG91_HTTP_AVAILABLE and MSG91_AUTHKEY and MSG91_OTP_TEMPLATE_ID)
+    TWILIO_ACCOUNT_SID = ""
+    TWILIO_AUTH_TOKEN = ""
+    TWILIO_VERIFY_SERVICE_SID = ""
+SMS_CONFIGURED = bool(
+    TWILIO_SDK_AVAILABLE
+    and TWILIO_ACCOUNT_SID
+    and TWILIO_AUTH_TOKEN
+    and TWILIO_VERIFY_SERVICE_SID
+)
 SMS_RESEND_SECONDS = 30
 
 MIN_REWARD = float(os.getenv("MIN_REWARD", "0"))
@@ -697,113 +698,67 @@ def normalize_phone(phone):
 def is_valid_phone(phone): return bool(normalize_phone(phone))
 
 
-def _msg91_api_request(url, method="GET"):
-    """Call MSG91 without exposing the auth key to the client/UI."""
-    req = urllib.request.Request(
-        url,
-        method=method,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=20) as response:
-        raw = response.read().decode("utf-8", errors="replace")
-    try:
-        return json.loads(raw)
-    except Exception:
-        return {"raw": raw}
-
-
-def _msg91_phone(user_row):
-    try:
-        value = user_row["phone"]
-    except Exception:
-        value = user_row.get("phone", "") if hasattr(user_row, "get") else ""
-    return normalize_phone(value or "")
-
-
-def send_msg91_otp(to_phone):
-    """Generate/send an OTP through MSG91. MSG91 owns OTP generation and verification."""
+def _twilio_verify_client():
+    """Return the configured Twilio Verify client without exposing secrets."""
     if not SMS_CONFIGURED:
-        st.session_state["_last_sms_error"] = (
-            "MSG91 SMS is not configured. Add MSG91_AUTHKEY and "
-            "MSG91_OTP_TEMPLATE_ID to Streamlit Secrets."
-        )
-        return False
+        return None
+    return TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 
+
+def send_twilio_verify_sms(to_phone):
+    """Start a real Twilio Verify SMS verification. No OTP is generated or stored locally."""
+    if not SMS_CONFIGURED:
+        st.session_state["_last_sms_error"] = "Twilio Verify is not configured."
+        return False
     phone = normalize_phone(to_phone)
     if not phone:
         st.session_state["_last_sms_error"] = "Invalid phone number."
         return False
-
-    # MSG91 expects the mobile number without the leading + in this API.
-    mobile = phone.lstrip("+")
-    params = urllib.parse.urlencode({
-        "template_id": MSG91_OTP_TEMPLATE_ID,
-        "mobile": mobile,
-        "otp_length": "6",
-        "otp_expiry": str(OTP_EXPIRY_MINUTES),
-    })
-    url = f"https://control.msg91.com/api/v5/otp?{params}"
-
     try:
-        # Authkey is sent as a header rather than embedded in the URL.
-        req = urllib.request.Request(
-            url,
-            method="POST",
-            headers={
-                "authkey": MSG91_AUTHKEY,
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            data=b"{}",
+        client = _twilio_verify_client()
+        verification = (
+            client.verify.v2
+            .services(TWILIO_VERIFY_SERVICE_SID)
+            .verifications.create(to=phone, channel="sms")
         )
-        with urllib.request.urlopen(req, timeout=20) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-        data = json.loads(raw)
-        success = str(data.get("type", "")).lower() == "success" or bool(data.get("request_id"))
-        if not success:
-            st.session_state["_last_sms_error"] = str(data.get("message") or data.get("msg") or "MSG91 rejected the OTP request.")
-        else:
-            st.session_state.pop("_last_sms_error", None)
-        return success
+        return getattr(verification, "status", "") in {"pending", "approved"}
     except Exception as exc:
+        # Keep provider details server-side; never surface credentials or raw API responses.
         st.session_state["_last_sms_error"] = str(exc)
         return False
 
 
-def verify_msg91_otp(to_phone, code):
-    """Verify an OTP against MSG91; the OTP is never stored by UNI HELP."""
+def verify_twilio_sms(to_phone, code):
+    """Check a user-entered code against Twilio Verify."""
     if not SMS_CONFIGURED:
-        return False, "MSG91 SMS verification is not configured. Please contact the administrator."
+        return False, "SMS verification is not configured. Please contact the administrator."
     phone = normalize_phone(to_phone)
     code = str(code or "").strip()
     if not phone:
         return False, "No valid mobile number is registered."
     if not re.fullmatch(r"\d{6}", code):
         return False, "Please enter the 6-digit OTP."
-
-    params = urllib.parse.urlencode({"mobile": phone.lstrip("+"), "otp": code})
-    url = f"https://control.msg91.com/api/v5/otp/verify?{params}"
     try:
-        req = urllib.request.Request(
-            url,
-            method="GET",
-            headers={"authkey": MSG91_AUTHKEY, "Accept": "application/json"},
+        client = _twilio_verify_client()
+        check = (
+            client.verify.v2
+            .services(TWILIO_VERIFY_SERVICE_SID)
+            .verification_checks.create(to=phone, code=code)
         )
-        with urllib.request.urlopen(req, timeout=20) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-        data = json.loads(raw)
-        message = str(data.get("message", "")).lower()
-        if "verified success" in message or "success" in message or data.get("type") == "success":
+        status = getattr(check, "status", "")
+        if status == "approved":
             return True, "Verified successfully."
-        return False, str(data.get("message") or data.get("msg") or "Invalid OTP. Please try again.")
+        if status == "pending":
+            return False, "Invalid OTP. Please try again."
+        return False, "OTP verification failed. Please request a new OTP."
     except Exception as exc:
         st.session_state["_last_sms_error"] = str(exc)
         return False, "Unable to verify OTP. Please try again."
 
 
 def deliver_sms_otp(user_row, purpose, reference_id=None, context_label="verification"):
-    """Start an MSG91 SMS OTP challenge."""
-    return send_msg91_otp(_msg91_phone(user_row))
+    """Start a Twilio Verify SMS challenge. Twilio owns OTP generation, expiry and verification."""
+    return send_twilio_verify_sms(user_row.get("phone") or "")
 
 
 def register_user(full_name,email,phone,student_id,password):
@@ -933,51 +888,67 @@ st.set_page_config(page_title="UNI HELP", page_icon="🎓", layout="wide")
 
 CUSTOM_CSS = """
 <style>
-:root{--uh-navy:#0b1736;--uh-blue:#2563eb;--uh-blue2:#4f7cff;--uh-orange:#f97316;--uh-bg:#f5f8fc;--uh-text:#10203f;--uh-muted:#64748b;--uh-line:#dbe4f0}
-.stApp{background:#f6f8fc;}
-.block-container{max-width:1180px!important;padding-top:1.35rem!important;padding-bottom:3rem!important;padding-left:2rem!important;padding-right:2rem!important;}
-[data-testid="stSidebar"]{border-right:1px solid #e2e8f0;background:#ffffff;}
-[data-testid="stSidebar"]>div:first-child{padding-top:1rem;}
-[data-testid="stSidebar"] .stRadio label{font-weight:700;color:#334155;}
-.uh-page-header{display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;margin:.15rem 0 1.2rem;padding-bottom:.9rem;border-bottom:1px solid #e2e8f0;}
-.uh-page-header h2{margin:0;color:var(--uh-navy);font-size:1.7rem;letter-spacing:-.035em;}
-.uh-page-header p{margin:.25rem 0 0;color:#64748b;font-size:.82rem;}
-[data-testid="stMetric"]{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:.75rem .85rem;box-shadow:0 5px 18px rgba(15,23,42,.045);}
-[data-testid="stVerticalBlockBorderWrapper"]{border-color:#e2e8f0!important;border-radius:16px!important;}
-.stButton>button,.stFormSubmitButton>button{border-radius:10px!important;font-weight:750!important;}
-.stApp:has(.uh-auth-shell){background:radial-gradient(circle at 12% 8%,rgba(37,99,235,.08),transparent 28%),radial-gradient(circle at 88% 92%,rgba(249,115,22,.07),transparent 24%),var(--uh-bg)}
-.uh-auth-shell{min-height:calc(100dvh - 1.2rem);display:flex;align-items:center;justify-content:center;padding:.55rem 1rem;box-sizing:border-box;overflow:hidden}
-.uh-auth-content{width:min(100%,440px);margin:auto}
-.uh-auth-hero{text-align:center;margin:0 auto .75rem;animation:uhFade .42s ease both}
-.uh-auth-logo-mark{width:48px;height:48px;margin:0 auto .35rem;border-radius:15px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#e8f0ff,#fff);border:1px solid #d7e3f5;box-shadow:0 10px 24px rgba(11,23,54,.09);font-size:1.45rem;animation:uhLogo .5s ease both}
-.uh-auth-hero h1{color:var(--uh-navy)!important;font-size:2.15rem!important;line-height:1;margin:0!important;letter-spacing:-.055em;font-weight:850}
-.uh-auth-tagline{color:#203454!important;font-size:.94rem;line-height:1.32;margin:.38rem 0 .18rem;font-weight:650}
-.uh-auth-subtitle{color:var(--uh-muted)!important;font-size:.76rem;margin:0;letter-spacing:.04em;font-weight:600}
-.uh-auth-shell [data-testid="stVerticalBlockBorderWrapper"]{background:rgba(255,255,255,.97)!important;border:1px solid rgba(219,228,240,.95)!important;border-radius:20px!important;box-shadow:0 18px 50px rgba(11,23,54,.09),0 2px 8px rgba(11,23,54,.04)!important;padding:.95rem!important;animation:uhCard .48s .04s ease both}
-.uh-auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:.2rem;background:#eef3f9;border-radius:11px;padding:.22rem;margin-bottom:.72rem}
-.uh-auth-tab-button button{border:0!important;background:transparent!important;color:#64748b!important;box-shadow:none!important;min-height:38px!important;border-radius:9px!important;font-size:.78rem!important;font-weight:800!important}
-.uh-auth-tab-button-active button{background:#fff!important;color:var(--uh-navy)!important;box-shadow:0 3px 10px rgba(11,23,54,.09)!important}
-.uh-auth-card-title{color:var(--uh-navy);font-size:1.18rem;font-weight:800;margin:.15rem 0 .1rem}
-.uh-auth-card-copy{color:#53637c!important;font-size:.78rem!important;margin:0 0 .72rem!important}
-.uh-auth-demo{margin:.55rem 0 0;padding:.42rem .55rem;border-radius:9px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412!important;font-size:.68rem;text-align:center}
-.uh-auth-divider{display:flex;align-items:center;gap:.55rem;color:#94a3b8;font-size:.68rem;margin:.65rem 0}.uh-auth-divider:before,.uh-auth-divider:after{content:"";height:1px;flex:1;background:#e2e8f0}
-.uh-otp-note{text-align:center;padding:.4rem .55rem;background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af!important;border-radius:9px;font-size:.7rem;margin:.35rem 0 .5rem}
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label,.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label p{color:#334155!important;font-weight:700!important;font-size:.73rem!important}
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{border:1px solid #cbd5e1!important;border-radius:10px!important;background:#fff!important;color:#0f172a!important;min-height:40px!important;box-shadow:none!important;font-size:.86rem!important}
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input:focus{border-color:var(--uh-blue)!important;box-shadow:0 0 0 3px rgba(37,99,235,.11)!important}
-.stApp:has(.uh-auth-shell) button{border-radius:10px!important;min-height:40px!important;font-weight:750!important;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease!important}
-.stApp:has(.uh-auth-shell) button:hover{transform:translateY(-1px)}
-.stApp:has(.uh-auth-shell) button[kind="primary"]{background:linear-gradient(135deg,var(--uh-blue),var(--uh-blue2))!important;color:#fff!important;border:0!important;box-shadow:0 7px 16px rgba(37,99,235,.18)!important}
-.uh-auth-secondary button{background:#fff!important;color:var(--uh-navy)!important;border:1px solid #cbd5e1!important}
-.uh-auth-secondary button:hover{border-color:#93c5fd!important;box-shadow:0 5px 13px rgba(11,23,54,.06)!important}
-.uh-auth-create button,.uh-auth-back button{background:transparent!important;color:var(--uh-blue)!important;border:0!important;box-shadow:none!important}
+:root{
+  --uh-navy:#081a3a; --uh-blue:#2563eb; --uh-blue2:#60a5fa; --uh-cyan:#22d3ee;
+  --uh-orange:#f97316; --uh-bg:#f4f8ff; --uh-text:#0f1f3d; --uh-muted:#64748b;
+  --uh-line:#dbe5f2; --uh-card:rgba(255,255,255,.92)
+}
+.stApp:has(.uh-auth-shell){
+  background:
+    radial-gradient(circle at 8% 12%,rgba(37,99,235,.13),transparent 24%),
+    radial-gradient(circle at 88% 18%,rgba(34,211,238,.10),transparent 21%),
+    radial-gradient(circle at 82% 92%,rgba(249,115,22,.08),transparent 24%),
+    linear-gradient(135deg,#f8fbff 0%,#f3f7fd 48%,#eef5ff 100%);
+}
+.uh-auth-shell{min-height:calc(100dvh - 1rem);display:flex;align-items:center;justify-content:center;padding:.45rem .8rem;box-sizing:border-box;overflow:hidden;position:relative}
+.uh-auth-shell:before,.uh-auth-shell:after{content:"";position:absolute;border-radius:999px;filter:blur(2px);pointer-events:none;animation:uhFloat 7s ease-in-out infinite}
+.uh-auth-shell:before{width:190px;height:190px;left:-75px;top:11%;background:radial-gradient(circle,rgba(37,99,235,.16),transparent 68%)}
+.uh-auth-shell:after{width:230px;height:230px;right:-90px;bottom:5%;background:radial-gradient(circle,rgba(249,115,22,.12),transparent 68%);animation-delay:-3s}
+.uh-auth-content{width:min(100%,460px);margin:auto;position:relative;z-index:1}
+.uh-auth-hero{text-align:center;margin:0 auto .6rem;animation:uhFadeUp .55s cubic-bezier(.22,1,.36,1) both}
+.uh-auth-logo-wrap{position:relative;width:62px;height:62px;margin:0 auto .45rem}
+.uh-auth-logo-ring{position:absolute;inset:-5px;border-radius:20px;background:linear-gradient(135deg,rgba(37,99,235,.13),rgba(96,165,250,.03));animation:uhPulse 2.8s ease-in-out infinite}
+.uh-auth-logo-mark{position:relative;width:62px;height:62px;border-radius:20px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#ffffff,#edf4ff);border:1px solid #d6e3f4;box-shadow:0 14px 32px rgba(8,26,58,.12),inset 0 1px 0 #fff;font-size:1.7rem}
+.uh-auth-kicker{display:inline-flex;align-items:center;gap:.35rem;padding:.23rem .52rem;border-radius:999px;background:rgba(255,255,255,.75);border:1px solid #dfe8f3;color:#31507d;font-size:.6rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;margin-bottom:.34rem;box-shadow:0 4px 12px rgba(8,26,58,.04)}
+.uh-auth-kicker-dot{width:6px;height:6px;border-radius:999px;background:linear-gradient(135deg,#22c55e,#16a34a);box-shadow:0 0 0 4px rgba(34,197,94,.10)}
+.uh-auth-hero h1{color:var(--uh-navy)!important;font-size:2.2rem!important;line-height:1!important;margin:0!important;letter-spacing:-.06em;font-weight:900}
+.uh-auth-tagline{color:#23385b!important;font-size:.94rem;line-height:1.28;margin:.36rem 0 .15rem;font-weight:700}
+.uh-auth-subtitle{color:#6b7d97!important;font-size:.72rem;margin:0;letter-spacing:.08em;font-weight:700}
+.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{position:relative;background:var(--uh-card)!important;border:1px solid rgba(214,226,241,.92)!important;border-radius:24px!important;box-shadow:0 26px 60px rgba(8,26,58,.12),0 6px 18px rgba(8,26,58,.05)!important;backdrop-filter:blur(18px);padding:1rem!important;animation:uhCardIn .6s .06s cubic-bezier(.22,1,.36,1) both;overflow:hidden}
+.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]:before{content:"";position:absolute;left:-10%;right:-10%;top:-45%;height:70%;background:radial-gradient(circle at 50% 75%,rgba(37,99,235,.075),transparent 58%);pointer-events:none}
+.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]>div{position:relative;z-index:1}
+.uh-auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:.25rem;background:#edf3fa;border:1px solid #dde7f3;border-radius:13px;padding:.23rem;margin-bottom:.72rem}
+.uh-auth-tab-button button{border:0!important;background:transparent!important;color:#71819a!important;box-shadow:none!important;min-height:38px!important;border-radius:10px!important;font-size:.75rem!important;font-weight:850!important;letter-spacing:.04em;transition:all .18s ease!important}
+.uh-auth-tab-button-active button{background:linear-gradient(135deg,#fff,#f8fbff)!important;color:var(--uh-navy)!important;box-shadow:0 6px 14px rgba(8,26,58,.08),inset 0 0 0 1px #e4ebf4!important}
+.uh-auth-card-title{color:var(--uh-navy);font-size:1.2rem;font-weight:850;margin:.12rem 0 .1rem;letter-spacing:-.02em}
+.uh-auth-card-copy{color:#61728b!important;font-size:.75rem!important;margin:0 0 .72rem!important}
+.uh-auth-demo{margin:.55rem 0 0;padding:.45rem .62rem;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412!important;font-size:.68rem;text-align:center}
+.uh-auth-divider{display:flex;align-items:center;gap:.55rem;color:#94a3b8;font-size:.67rem;margin:.62rem 0}.uh-auth-divider:before,.uh-auth-divider:after{content:"";height:1px;flex:1;background:linear-gradient(90deg,transparent,#dbe5f2,transparent)}
+.uh-otp-note{text-align:center;padding:.42rem .6rem;background:linear-gradient(135deg,#eff6ff,#f5f9ff);border:1px solid #c9dcfb;color:#1e40af!important;border-radius:10px;font-size:.69rem;margin:.35rem 0 .5rem}
+.uh-auth-status{padding:.5rem .62rem;border-radius:10px;font-size:.7rem;font-weight:700;margin:.35rem 0;background:#f8fbff;border:1px solid #dce8f6;color:#375273}.uh-auth-status.ok{background:#ecfdf5;color:#047857;border-color:#a7f3d0}.uh-auth-status.err{background:#fff1f2;color:#be123c;border-color:#fecdd3}
+.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label,.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label p{color:#30425f!important;font-weight:750!important;font-size:.7rem!important}
+.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{border:1px solid #c8d4e3!important;border-radius:11px!important;background:rgba(255,255,255,.96)!important;color:#0f172a!important;min-height:40px!important;box-shadow:inset 0 1px 1px rgba(8,26,58,.02)!important;font-size:.83rem!important;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease!important}
+.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input:focus{border-color:#5b8def!important;box-shadow:0 0 0 3px rgba(37,99,235,.11),0 5px 14px rgba(37,99,235,.06)!important;transform:translateY(-1px)}
+.stApp:has(.uh-auth-shell) button{border-radius:11px!important;min-height:40px!important;font-weight:800!important;transition:transform .16s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease!important}
+.stApp:has(.uh-auth-shell) button:hover{transform:translateY(-2px)}
+.stApp:has(.uh-auth-shell) button:active{transform:translateY(0) scale(.985)}
+.stApp:has(.uh-auth-shell) button[kind="primary"]{background:linear-gradient(135deg,#2563eb 0%,#4f7cff 62%,#60a5fa 100%)!important;color:#fff!important;border:0!important;box-shadow:0 10px 20px rgba(37,99,235,.20)!important;position:relative;overflow:hidden}
+.stApp:has(.uh-auth-shell) button[kind="primary"]:after{content:"";position:absolute;top:-40%;left:-30%;width:30%;height:180%;transform:rotate(18deg);background:linear-gradient(90deg,transparent,rgba(255,255,255,.32),transparent);animation:uhShimmer 3.2s linear infinite}
+.uh-auth-secondary button{background:#fff!important;color:var(--uh-navy)!important;border:1px solid #cbd8e7!important;box-shadow:0 4px 10px rgba(8,26,58,.03)!important}
+.uh-auth-secondary button:hover{border-color:#8eb6fb!important;box-shadow:0 7px 15px rgba(8,26,58,.07)!important}
+.uh-auth-create button,.uh-auth-back button{background:transparent!important;color:#2563eb!important;border:0!important;box-shadow:none!important}
 .uh-auth-back button{color:#64748b!important}
-.uh-auth-status{padding:.48rem .6rem;border-radius:9px;font-size:.73rem;font-weight:650;margin:.35rem 0}.uh-auth-status.ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0}.uh-auth-status.err{background:#fff1f2;color:#be123c;border:1px solid #fecdd3}
-@keyframes uhFade{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}@keyframes uhLogo{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}@keyframes uhCard{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-@media(max-width:900px){.block-container{max-width:100%!important;padding-left:1rem!important;padding-right:1rem!important;}}
-@media(max-width:640px){.block-container{padding-top:.8rem!important;padding-left:.7rem!important;padding-right:.7rem!important}.uh-page-header h2{font-size:1.35rem}.uh-auth-shell{min-height:100dvh;padding:.35rem .45rem;overflow:visible}.uh-auth-content{width:min(100%,410px)}.uh-auth-hero{margin-bottom:.5rem}.uh-auth-logo-mark{width:42px;height:42px;border-radius:13px;font-size:1.25rem}.uh-auth-hero h1{font-size:1.85rem!important}.uh-auth-tagline{font-size:.84rem}.uh-auth-subtitle{font-size:.69rem}.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{padding:.72rem!important;border-radius:17px!important}.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{min-height:39px!important}.stApp:has(.uh-auth-shell) button{min-height:40px!important}}
+.uh-auth-mini-row{display:flex;justify-content:center;align-items:center;gap:.38rem;color:#8a99ad;font-size:.63rem;margin-top:.46rem}
+.uh-auth-mini-row b{color:#526782}
+@keyframes uhFadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes uhCardIn{from{opacity:0;transform:translateY(16px) scale(.985)}to{opacity:1;transform:none}}
+@keyframes uhFloat{0%,100%{transform:translate3d(0,0,0)}50%{transform:translate3d(10px,-12px,0)}}
+@keyframes uhPulse{0%,100%{transform:scale(.98);opacity:.9}50%{transform:scale(1.05);opacity:1}}
+@keyframes uhShimmer{0%{left:-35%}55%,100%{left:120%}}
+@media(max-width:640px){.uh-auth-shell{min-height:100dvh;padding:.35rem .45rem;overflow:visible}.uh-auth-content{width:min(100%,410px)}.uh-auth-hero{margin-bottom:.48rem}.uh-auth-logo-wrap,.uh-auth-logo-mark{width:52px;height:52px}.uh-auth-logo-mark{border-radius:17px;font-size:1.4rem}.uh-auth-hero h1{font-size:1.9rem!important}.uh-auth-tagline{font-size:.82rem}.uh-auth-subtitle{font-size:.66rem}.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{padding:.78rem!important;border-radius:19px!important}.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{min-height:40px!important}.stApp:has(.uh-auth-shell) button{min-height:41px!important}.uh-auth-shell:before{left:-110px}.uh-auth-shell:after{right:-120px}}
 </style>
 """
+
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 init_db()
@@ -1024,10 +995,13 @@ def _render_auth_shell_end():
 
 def _render_auth_hero():
     st.markdown(
-        '<div class="uh-auth-hero"><div class="uh-auth-logo-mark">🎓</div>'
+        '<div class="uh-auth-hero">'
+        '<div class="uh-auth-kicker"><span class="uh-auth-kicker-dot"></span>Student-powered campus network</div>'
+        '<div class="uh-auth-logo-wrap"><div class="uh-auth-logo-ring"></div><div class="uh-auth-logo-mark">🎓</div></div>'
         '<h1>UNI HELP</h1>'
         '<p class="uh-auth-tagline">Your campus. Your community.<br>Someone can help.</p>'
-        '<p class="uh-auth-subtitle">Borrow • Deliver • Assist • Earn</p></div>',
+        '<p class="uh-auth-subtitle">Borrow • Deliver • Assist • Earn</p>'
+        '</div>',
         unsafe_allow_html=True,
     )
 
@@ -1038,27 +1012,29 @@ def _set_user_and_route(user):
     st.rerun()
 
 
-def _send_student_login_sms(student_id, password):
-    if not SMS_CONFIGURED:
-        return False, "SMS verification is not configured. Please contact the administrator."
+def _send_student_login_email_otp(student_id, password):
+    """Validate existing credentials, then send a real email OTP to the registered email."""
+    if not EMAIL_CONFIGURED:
+        return False, "Email verification is not configured. Please contact the administrator."
     ok, result = authenticate_student_credentials(student_id, password)
     if not ok:
         return False, result
-    phone = normalize_phone(result.get("phone") or "")
-    if not phone:
-        return False, "No valid mobile number is registered for this Student ID."
-    if not deliver_sms_otp(result, "LOGIN_SMS_OTP", None, "login"):
-        return False, st.session_state.get("_last_sms_error") or "Unable to send OTP. Please try again."
+    email = (result.get("email") or "").strip()
+    if not email or not is_valid_email(email):
+        return False, "No valid email address is registered for this Student ID."
+    if not deliver_otp(result, "LOGIN_EMAIL_OTP", None, "login verification"):
+        return False, "Unable to send OTP. Please try again."
     st.session_state["login_student_id"] = student_id.strip()
     st.session_state["login_otp_resend_at"] = time.time() + SMS_RESEND_SECONDS
-    return True, "OTP sent successfully."
+    return True, "OTP sent successfully to your registered email."
 
 
-def _verify_student_login_sms(student_id, password, otp):
+def _verify_student_login_email(student_id, password, otp):
+    """Revalidate credentials and verify the email OTP stored by the existing OTP system."""
     ok, result = authenticate_student_credentials(student_id, password)
     if not ok:
         return False, result
-    ok, msg = verify_msg91_otp(result.get("phone") or "", otp)
+    ok, msg = verify_otp(result["id"], "LOGIN_EMAIL_OTP", None, otp)
     return (True, result) if ok else (False, msg)
 
 
@@ -1090,11 +1066,22 @@ def _clear_registration_state():
 
 
 def _auth_tabs(active):
+    st.markdown('<div class="uh-auth-tabs">', unsafe_allow_html=True)
     a, b = st.columns(2, gap="small")
     with a:
-        st.markdown('<div class="uh-auth-tab-button uh-auth-tab-button-active"><button disabled>LOGIN</button></div>' if active == "login" else '<div class="uh-auth-tab-button"><button disabled>LOGIN</button></div>', unsafe_allow_html=True)
+        if active == "login":
+            st.markdown('<div class="uh-auth-tab-button uh-auth-tab-button-active"><button disabled>LOGIN</button></div>', unsafe_allow_html=True)
+        elif st.button("LOGIN", use_container_width=True, key="tab_login"):
+            _clear_registration_state()
+            st.session_state["auth_mode"] = "Home"
+            st.rerun()
     with b:
-        st.markdown('<div class="uh-auth-tab-button uh-auth-tab-button-active"><button disabled>CREATE ACCOUNT</button></div>' if active == "register" else '<div class="uh-auth-tab-button"><button disabled>CREATE ACCOUNT</button></div>', unsafe_allow_html=True)
+        if active == "register":
+            st.markdown('<div class="uh-auth-tab-button uh-auth-tab-button-active"><button disabled>CREATE ACCOUNT</button></div>', unsafe_allow_html=True)
+        elif st.button("CREATE ACCOUNT", use_container_width=True, key="tab_register"):
+            st.session_state["auth_mode"] = "Register"
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 def render_landing():
@@ -1102,23 +1089,23 @@ def render_landing():
     _render_auth_hero()
     with st.container(border=True):
         _auth_tabs("login")
-        st.markdown('<div class="uh-auth-card-title">Welcome back</div><div class="uh-auth-card-copy">Sign in with your Student ID, password and registered mobile.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="uh-auth-card-title">Welcome back</div><div class="uh-auth-card-copy">Sign in with your Student ID, password and registered email.</div>', unsafe_allow_html=True)
         sid = st.text_input("Student ID", placeholder="Enter your Student ID", key="auth_student_id")
         pw = st.text_input("Password", type="password", placeholder="Enter your password", key="auth_student_password")
-        if st.button("Send OTP", use_container_width=True, type="primary", key="auth_send_sms"):
+        if st.button("Send OTP", use_container_width=True, type="primary", key="auth_send_email"):
             with st.spinner("Sending secure OTP…"):
-                ok, msg = _send_student_login_sms(sid, pw)
+                ok, msg = _send_student_login_email_otp(sid, pw)
             if ok:
                 st.success(msg)
                 st.rerun()
             else:
                 st.error(msg)
         if st.session_state.get("login_student_id"):
-            st.text_input("Phone OTP", max_chars=6, placeholder="Enter 6-digit OTP", key="auth_login_otp")
+            st.text_input("Email OTP", max_chars=6, placeholder="Enter 6-digit OTP", key="auth_login_otp")
             remaining = max(0, int(st.session_state.get("login_otp_resend_at", 0) - time.time()))
-            if st.button("Verify & Login", use_container_width=True, type="primary", key="auth_verify_sms"):
+            if st.button("Verify & Login", use_container_width=True, type="primary", key="auth_verify_email"):
                 with st.spinner("Verifying OTP…"):
-                    ok, result = _verify_student_login_sms(sid or st.session_state.get("login_student_id", ""), pw, st.session_state.get("auth_login_otp", ""))
+                    ok, result = _verify_student_login_email(sid or st.session_state.get("login_student_id", ""), pw, st.session_state.get("auth_login_otp", ""))
                 if ok:
                     st.success("Login successful. Welcome back!")
                     st.session_state.pop("login_student_id", None)
@@ -1126,9 +1113,9 @@ def render_landing():
                     _set_user_and_route(result)
                 else:
                     st.error("OTP expired. Please request a new one." if "expired" in str(result).lower() else "Invalid OTP. Please try again.")
-            if st.button("Resend OTP", disabled=remaining > 0, use_container_width=True, key="auth_resend_sms"):
+            if st.button("Resend OTP", disabled=remaining > 0, use_container_width=True, key="auth_resend_email"):
                 with st.spinner("Sending secure OTP…"):
-                    ok, msg = _send_student_login_sms(sid or st.session_state.get("login_student_id", ""), pw)
+                    ok, msg = _send_student_login_email_otp(sid or st.session_state.get("login_student_id", ""), pw)
                 if ok:
                     st.success(msg)
                     st.rerun()
@@ -1143,8 +1130,9 @@ def render_landing():
         if st.button("Admin Login", use_container_width=True, key="auth_admin"):
             st.session_state["auth_mode"] = "AdminLogin"
             st.rerun()
-        if not EMAIL_CONFIGURED or not SMS_CONFIGURED:
-            missing = " and ".join(x for x, configured in (("email", EMAIL_CONFIGURED), ("MSG91 SMS", SMS_CONFIGURED)) if not configured)
+        st.markdown('<div class="uh-auth-mini-row"><span>Protected by secure account verification</span><b>•</b><span>UNI HELP</span></div>', unsafe_allow_html=True)
+        if not EMAIL_CONFIGURED:
+            missing = "email"
             st.markdown(f'<div class="uh-auth-demo">Configuration notice • {missing} service is not configured</div>', unsafe_allow_html=True)
     _render_auth_shell_end()
 
@@ -1227,7 +1215,7 @@ def render_register():
                     st.text_input("Mobile OTP", max_chars=6, placeholder="Enter 6-digit SMS OTP", key="reg_phone_otp")
                     if st.button("Verify Mobile", use_container_width=True, type="primary", key="reg_verify_phone"):
                         with st.spinner("Verifying mobile…"):
-                            ok, msg = verify_msg91_otp(user.get("phone") or "", st.session_state.get("reg_phone_otp", ""))
+                            ok, msg = verify_twilio_sms(user.get("phone") or "", st.session_state.get("reg_phone_otp", ""))
                         if ok:
                             st.session_state["registration_phone_verified"] = True
                             st.success("Mobile verified successfully.")
@@ -1258,6 +1246,7 @@ def render_register():
             _clear_registration_state()
             st.session_state["auth_mode"] = "Home"
             st.rerun()
+        st.markdown('<div class="uh-auth-mini-row"><span>Your information stays inside UNI HELP</span></div>', unsafe_allow_html=True)
     _render_auth_shell_end()
 
 
@@ -1326,11 +1315,7 @@ def render_admin_login():
 # -----------------------------------------------------------------------------
 
 def render_dashboard(user):
-    st.markdown(
-        f'<div class="uh-page-header"><div><h2>Welcome back, {user["full_name"]} 👋</h2>'
-        '<p>Your campus help hub — requests, borrowing, tasks and earnings in one place.</p></div></div>',
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"## Welcome, {user['full_name']} 👋")
     if not user["verified"]:
         st.warning("Your email isn't verified yet. Some actions may be limited. "
                    "Go to the sidebar → Verify Email.")
@@ -1348,7 +1333,7 @@ def render_dashboard(user):
     ).fetchone()["s"]
     conn.close()
 
-    m1, m2, m3, m4, m5, m6 = st.columns([1, 1, 1, 1, 1, 1], gap="small")
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
     m1.metric("Trust Score", f"{user['trust_score']}/100")
     avg_rating = round(user["rating_sum"] / user["rating_count"], 1) if user["rating_count"] else 0
     m2.metric("Rating", f"⭐ {avg_rating}" if user["rating_count"] else "No ratings yet")
@@ -1398,7 +1383,7 @@ def render_dashboard(user):
 # -----------------------------------------------------------------------------
 
 def render_delivery(user):
-    st.markdown('<div class="uh-page-header"><div><h2>📦 Delivery</h2><p>Move items across campus with verified student helpers.</p></div></div>', unsafe_allow_html=True)
+    st.markdown("## 📦 Delivery")
     tabs = st.tabs(["Create Request", "Browse & Accept", "My Requests (as requester)", "My Deliveries (as helper)"])
 
     with tabs[0]:
@@ -1677,7 +1662,7 @@ def render_dispute_form(transaction_type, transaction_id, reporter_id):
 # -----------------------------------------------------------------------------
 
 def render_borrowing(user):
-    st.markdown('<div class="uh-page-header"><div><h2>🤝 Borrowing</h2><p>Lend and borrow useful items from verified students.</p></div></div>', unsafe_allow_html=True)
+    st.markdown("## 🤝 Borrowing")
     tabs = st.tabs(["List an Item", "Browse Items", "My Listings", "My Borrow Requests"])
 
     with tabs[0]:
@@ -1932,7 +1917,7 @@ def _finalize_return(b, borrower_user):
 # -----------------------------------------------------------------------------
 
 def render_microtasks(user):
-    st.markdown('<div class="uh-page-header"><div><h2>🛠 Micro-Tasks</h2><p>Post quick campus jobs or earn by helping others.</p></div></div>', unsafe_allow_html=True)
+    st.markdown("## 🛠 Micro-Tasks")
     tabs = st.tabs(["Create Task", "Browse & Accept", "My Tasks (creator)", "My Tasks (helper)"])
 
     with tabs[0]:
@@ -2067,7 +2052,7 @@ def render_microtasks(user):
 # -----------------------------------------------------------------------------
 
 def render_notifications(user):
-    st.markdown('<div class="uh-page-header"><div><h2>📨 Notifications</h2><p>Stay updated on your UNI HELP activity.</p></div></div>', unsafe_allow_html=True)
+    st.markdown("## 📨 Notifications")
     if st.button("Mark all as read"):
         mark_notifications_read(user["id"])
         st.rerun()
@@ -2081,7 +2066,7 @@ def render_notifications(user):
 
 
 def render_wallet(user):
-    st.markdown('<div class="uh-page-header"><div><h2>💰 Wallet & UniCoins</h2><p>Track prototype earnings, escrow and community rewards.</p></div></div>', unsafe_allow_html=True)
+    st.markdown("## 💰 Wallet & UniCoins")
     c1, c2 = st.columns(2)
     c1.metric("🪙 UniCoins", user["unicoins"])
     conn = get_conn()
@@ -2116,7 +2101,7 @@ def render_wallet(user):
 
 
 def render_disputes(user):
-    st.markdown('<div class="uh-page-header"><div><h2>⚠ Disputes</h2><p>Review issues reported on your transactions.</p></div></div>', unsafe_allow_html=True)
+    st.markdown("## ⚠ Disputes")
     conn = get_conn()
     mine = conn.execute("SELECT * FROM disputes WHERE reporter_id=? ORDER BY id DESC", (user["id"],)).fetchall()
     conn.close()
@@ -2267,7 +2252,7 @@ def render_admin(user):
     if not EMAIL_CONFIGURED or not SMS_CONFIGURED:
         missing=[]
         if not EMAIL_CONFIGURED: missing.append("email SMTP")
-        if not SMS_CONFIGURED: missing.append("MSG91 SMS (authkey + OTP template)")
+        if not SMS_CONFIGURED: missing.append("SMS/Twilio")
         st.warning("Authentication configuration incomplete: " + ", ".join(missing) + ".")
     st.markdown("## 🛡 Admin Dashboard")
     conn = get_conn()
