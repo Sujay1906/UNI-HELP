@@ -999,6 +999,49 @@ CUSTOM_CSS = """
 .uh-page-card{background:#fff;border:1px solid #e9e6e1;border-radius:22px;padding:.95rem;box-shadow:0 6px 18px rgba(24,24,24,.05)}.stApp:has(.uh-student-shell) .st-key-impact_borrow button,.stApp:has(.uh-student-shell) .st-key-impact_lend button,.stApp:has(.uh-student-shell) .st-key-impact_tasks button,.stApp:has(.uh-student-shell) .st-key-impact_help button{height:64px!important;min-height:64px!important;background:#fff!important;color:#171717!important;border:1px solid #e8e5e0!important;border-radius:20px!important;box-shadow:0 5px 14px rgba(24,24,24,.045)!important;text-align:left!important;padding:0 1rem!important;font-size:.88rem!important;font-weight:850!important;transition:transform .18s ease,box-shadow .18s ease!important}.stApp:has(.uh-student-shell) .st-key-impact_borrow button:hover,.stApp:has(.uh-student-shell) .st-key-impact_lend button:hover,.stApp:has(.uh-student-shell) .st-key-impact_tasks button:hover,.stApp:has(.uh-student-shell) .st-key-impact_help button:hover{transform:translateY(-2px)!important;box-shadow:0 10px 22px rgba(24,24,24,.08)!important}
 .stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab-list"]{background:#efede9;border-radius:13px;padding:.2rem;gap:.15rem}.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab"]{height:34px;border-radius:10px;color:#777;font-size:.65rem;font-weight:800}.stApp:has(.uh-student-shell) .stTabs [aria-selected="true"]{background:#fff;color:#a6530c;box-shadow:0 3px 9px rgba(0,0,0,.06)}
 @media(max-width:640px){.stApp:has(.uh-student-shell) .main .block-container{padding-left:12px!important;padding-right:12px!important;padding-bottom:95px!important}.uh-home-greeting h1{font-size:1.72rem!important}.uh-coins-card{border-radius:22px;padding:.95rem}.uh-coins-value{font-size:2.35rem}.uh-impact-card{border-radius:18px}.uh-impact-icon{width:44px;height:44px}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav{bottom:7px;width:calc(100% - 14px);border-radius:22px}}
+
+/* --------------------------------------------------------------------------
+   Student app readability hardening
+   Streamlit can inherit the browser/theme text color on some deployed builds.
+   Keep the mobile product shell explicitly light so every page stays readable.
+   -------------------------------------------------------------------------- */
+.stApp:has(.uh-student-shell){background:#f7f7f5!important;color:#171717!important}
+.stApp:has(.uh-student-shell) .main .block-container{max-width:620px!important;padding-top:14px!important;color:#171717!important}
+.stApp:has(.uh-student-shell) .main .block-container h1,
+.stApp:has(.uh-student-shell) .main .block-container h2,
+.stApp:has(.uh-student-shell) .main .block-container h3,
+.stApp:has(.uh-student-shell) .main .block-container h4,
+.stApp:has(.uh-student-shell) .main .block-container p,
+.stApp:has(.uh-student-shell) .main .block-container li,
+.stApp:has(.uh-student-shell) .main .block-container [data-testid="stMarkdownContainer"],
+.stApp:has(.uh-student-shell) .main .block-container [data-testid="stCaptionContainer"]{color:#171717!important}
+.stApp:has(.uh-student-shell) .main .block-container [data-testid="stCaptionContainer"]{color:#777!important}
+.stApp:has(.uh-student-shell) .main .block-container label,
+.stApp:has(.uh-student-shell) .main .block-container label p{color:#343434!important}
+.stApp:has(.uh-student-shell) .main .block-container input,
+.stApp:has(.uh-student-shell) .main .block-container textarea,
+.stApp:has(.uh-student-shell) .main .block-container [data-baseweb="select"]{color:#171717!important;background:#fff!important}
+.stApp:has(.uh-student-shell) .main .block-container input::placeholder,
+.stApp:has(.uh-student-shell) .main .block-container textarea::placeholder{color:#9a9a9a!important}
+.stApp:has(.uh-student-shell) .main .block-container [data-testid="stAlert"]{color:#171717!important}
+.stApp:has(.uh-student-shell) .main .block-container [data-testid="stMetricLabel"],
+.stApp:has(.uh-student-shell) .main .block-container [data-testid="stMetricValue"]{color:#171717!important}
+
+/* Notifications / list pages */
+.uh-notifications-page{margin-top:.25rem}
+.uh-notifications-title{font-size:1.65rem;font-weight:950;letter-spacing:-.045em;color:#171717!important;margin:.15rem 0 .2rem}
+.uh-notifications-subtitle{font-size:.75rem;color:#777!important;margin:0 0 .9rem}
+.uh-notification-card{display:flex;gap:.72rem;align-items:flex-start;background:#fff;border:1px solid #e8e5e0;border-radius:18px;padding:.85rem .9rem;margin:.55rem 0;box-shadow:0 6px 16px rgba(24,24,24,.045);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
+.uh-notification-card:hover{transform:translateY(-2px);box-shadow:0 10px 22px rgba(24,24,24,.08);border-color:#ddd8d0}
+.uh-notification-dot{width:10px;height:10px;border-radius:50%;background:#2589c7;flex:none;margin-top:.28rem;box-shadow:0 0 0 5px #eaf5fb}
+.uh-notification-dot.read{background:#b9b9b9;box-shadow:0 0 0 5px #f1f1f1}
+.uh-notification-message{font-size:.78rem;line-height:1.42;color:#222!important;font-weight:700}
+.uh-notification-time{font-size:.61rem;color:#929292!important;margin-top:.25rem}
+.uh-notifications-action button{border-radius:11px!important;background:#fff!important;color:#8f4d13!important;border:1px solid #eadfd3!important;box-shadow:none!important;font-size:.68rem!important;font-weight:850!important}
+
+/* Keep the mobile shell compact and app-like on desktop browsers too. */
+@media(min-width:761px){.stApp:has(.uh-student-shell) .main .block-container{padding-top:18px!important}.stApp:has(.uh-student-shell) .main{max-width:100%!important}}
+
 </style>
 """
 
@@ -2168,17 +2211,20 @@ def render_microtasks(user):
 # -----------------------------------------------------------------------------
 
 def render_notifications(user):
-    st.markdown("## 📨 Notifications")
-    if st.button("Mark all as read"):
+    st.markdown("<div class='uh-notifications-page'>", unsafe_allow_html=True)
+    st.markdown("<div class='uh-page-kicker'>UPDATES</div><div class='uh-notifications-title'>Notifications</div><div class='uh-notifications-subtitle'>Stay up to date with your campus activity.</div>", unsafe_allow_html=True)
+    if st.button("Mark all as read", key="mark_all_notifications"):
         mark_notifications_read(user["id"])
         st.rerun()
     notifs = get_notifications(user["id"], limit=100)
     if not notifs:
-        st.caption("No notifications.")
+        st.markdown("<div class='uh-page-card'><strong>No notifications yet</strong><div style='font-size:.7rem;color:#777;margin-top:.25rem'>You're all caught up.</div></div>", unsafe_allow_html=True)
     for n in notifs:
-        icon = "🔵" if not n["is_read"] else "⚪"
-        st.markdown(f"{icon} {n['message']}  \n<small>{n['created_at'][:19].replace('T',' ')}</small>", unsafe_allow_html=True)
-        st.divider()
+        read_cls = "read" if n["is_read"] else ""
+        message = str(n["message"]).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        created = str(n["created_at"])[:19].replace("T", " ")
+        st.markdown(f"<div class='uh-notification-card'><div class='uh-notification-dot {read_cls}'></div><div><div class='uh-notification-message'>{message}</div><div class='uh-notification-time'>{created}</div></div></div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_wallet(user):
@@ -2782,4 +2828,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+   
   
