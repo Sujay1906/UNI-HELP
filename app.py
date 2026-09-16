@@ -301,6 +301,9 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_r
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "profile_photo_path" not in columns:
+        conn.execute("ALTER TABLE users ADD COLUMN profile_photo_path TEXT")
     conn.commit()
     # Create a default admin account if none exists (demo convenience only).
     cur = conn.execute("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
@@ -888,11 +891,6 @@ st.set_page_config(page_title="UNI HELP", page_icon="🎓", layout="wide")
 
 CUSTOM_CSS = """
 <style>
-/* UNI HELP AUTH VIEWPORT: app-like first screen */
-html,body,[data-testid="stAppViewContainer"]{overflow:hidden!important}
-[data-testid="stHeader"],[data-testid="stToolbar"],footer{display:none!important}
-[data-testid="stAppViewContainer"] > .main{padding-top:0!important}
-[data-testid="stAppViewContainer"] .block-container{padding-top:0!important;padding-bottom:0!important;max-width:100%!important}
 :root{
   --uh-navy:#081a3a; --uh-blue:#2563eb; --uh-blue2:#60a5fa; --uh-cyan:#22d3ee;
   --uh-orange:#f97316; --uh-bg:#f4f8ff; --uh-text:#0f1f3d; --uh-muted:#64748b;
@@ -905,24 +903,24 @@ html,body,[data-testid="stAppViewContainer"]{overflow:hidden!important}
     radial-gradient(circle at 82% 92%,rgba(249,115,22,.08),transparent 24%),
     linear-gradient(135deg,#f8fbff 0%,#f3f7fd 48%,#eef5ff 100%);
 }
-.uh-auth-shell{height:100dvh;min-height:0;display:flex;align-items:center;justify-content:center;padding:.55rem .8rem;box-sizing:border-box;overflow:hidden;position:relative}
+.uh-auth-shell{min-height:calc(100dvh - 1rem);display:flex;align-items:center;justify-content:center;padding:.45rem .8rem;box-sizing:border-box;overflow:hidden;position:relative}
 .uh-auth-shell:before,.uh-auth-shell:after{content:"";position:absolute;border-radius:999px;filter:blur(2px);pointer-events:none;animation:uhFloat 7s ease-in-out infinite}
 .uh-auth-shell:before{width:190px;height:190px;left:-75px;top:11%;background:radial-gradient(circle,rgba(37,99,235,.16),transparent 68%)}
 .uh-auth-shell:after{width:230px;height:230px;right:-90px;bottom:5%;background:radial-gradient(circle,rgba(249,115,22,.12),transparent 68%);animation-delay:-3s}
-.uh-auth-content{width:min(100%,430px);margin:auto;position:relative;z-index:1;max-height:calc(100dvh - 1.1rem)}
-.uh-auth-hero{text-align:center;margin:0 auto .42rem;animation:uhFadeUp .55s cubic-bezier(.22,1,.36,1) both}
-.uh-auth-logo-wrap{position:relative;width:54px;height:54px;margin:0 auto .28rem}
+.uh-auth-content{width:min(100%,460px);margin:auto;position:relative;z-index:1}
+.uh-auth-hero{text-align:center;margin:0 auto .6rem;animation:uhFadeUp .55s cubic-bezier(.22,1,.36,1) both}
+.uh-auth-logo-wrap{position:relative;width:62px;height:62px;margin:0 auto .45rem}
 .uh-auth-logo-ring{position:absolute;inset:-5px;border-radius:20px;background:linear-gradient(135deg,rgba(37,99,235,.13),rgba(96,165,250,.03));animation:uhPulse 2.8s ease-in-out infinite}
-.uh-auth-logo-mark{position:relative;width:54px;height:54px;border-radius:17px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#ffffff,#edf4ff);border:1px solid #d6e3f4;box-shadow:0 14px 32px rgba(8,26,58,.12),inset 0 1px 0 #fff;font-size:1.4rem}
+.uh-auth-logo-mark{position:relative;width:62px;height:62px;border-radius:20px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#ffffff,#edf4ff);border:1px solid #d6e3f4;box-shadow:0 14px 32px rgba(8,26,58,.12),inset 0 1px 0 #fff;font-size:1.7rem}
 .uh-auth-kicker{display:inline-flex;align-items:center;gap:.35rem;padding:.23rem .52rem;border-radius:999px;background:rgba(255,255,255,.75);border:1px solid #dfe8f3;color:#31507d;font-size:.6rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;margin-bottom:.34rem;box-shadow:0 4px 12px rgba(8,26,58,.04)}
 .uh-auth-kicker-dot{width:6px;height:6px;border-radius:999px;background:linear-gradient(135deg,#22c55e,#16a34a);box-shadow:0 0 0 4px rgba(34,197,94,.10)}
-.uh-auth-hero h1{color:var(--uh-navy)!important;font-size:1.95rem!important;line-height:1!important;margin:0!important;letter-spacing:-.06em;font-weight:900}
-.uh-auth-tagline{color:#23385b!important;font-size:.84rem;line-height:1.28;margin:.36rem 0 .15rem;font-weight:700}
-.uh-auth-subtitle{color:#6b7d97!important;font-size:.65rem;margin:0;letter-spacing:.08em;font-weight:700}
-.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{position:relative;background:var(--uh-card)!important;border:1px solid rgba(214,226,241,.92)!important;border-radius:24px!important;box-shadow:0 26px 60px rgba(8,26,58,.12),0 6px 18px rgba(8,26,58,.05)!important;backdrop-filter:blur(18px);padding:.78rem!important;animation:uhCardIn .6s .06s cubic-bezier(.22,1,.36,1) both;overflow:hidden}
+.uh-auth-hero h1{color:var(--uh-navy)!important;font-size:2.2rem!important;line-height:1!important;margin:0!important;letter-spacing:-.06em;font-weight:900}
+.uh-auth-tagline{color:#23385b!important;font-size:.94rem;line-height:1.28;margin:.36rem 0 .15rem;font-weight:700}
+.uh-auth-subtitle{color:#6b7d97!important;font-size:.72rem;margin:0;letter-spacing:.08em;font-weight:700}
+.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{position:relative;background:var(--uh-card)!important;border:1px solid rgba(214,226,241,.92)!important;border-radius:24px!important;box-shadow:0 26px 60px rgba(8,26,58,.12),0 6px 18px rgba(8,26,58,.05)!important;backdrop-filter:blur(18px);padding:1rem!important;animation:uhCardIn .6s .06s cubic-bezier(.22,1,.36,1) both;overflow:hidden}
 .stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]:before{content:"";position:absolute;left:-10%;right:-10%;top:-45%;height:70%;background:radial-gradient(circle at 50% 75%,rgba(37,99,235,.075),transparent 58%);pointer-events:none}
 .stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]>div{position:relative;z-index:1}
-.uh-auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:.25rem;background:#edf3fa;border:1px solid #dde7f3;border-radius:13px;padding:.23rem;margin-bottom:.5rem}
+.uh-auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:.25rem;background:#edf3fa;border:1px solid #dde7f3;border-radius:13px;padding:.23rem;margin-bottom:.72rem}
 .uh-auth-tab-button button{border:0!important;background:transparent!important;color:#71819a!important;box-shadow:none!important;min-height:38px!important;border-radius:10px!important;font-size:.75rem!important;font-weight:850!important;letter-spacing:.04em;transition:all .18s ease!important}
 .uh-auth-tab-button-active button{background:linear-gradient(135deg,#fff,#f8fbff)!important;color:var(--uh-navy)!important;box-shadow:0 6px 14px rgba(8,26,58,.08),inset 0 0 0 1px #e4ebf4!important}
 .uh-auth-card-title{color:var(--uh-navy);font-size:1.2rem;font-weight:850;margin:.12rem 0 .1rem;letter-spacing:-.02em}
@@ -932,9 +930,9 @@ html,body,[data-testid="stAppViewContainer"]{overflow:hidden!important}
 .uh-otp-note{text-align:center;padding:.42rem .6rem;background:linear-gradient(135deg,#eff6ff,#f5f9ff);border:1px solid #c9dcfb;color:#1e40af!important;border-radius:10px;font-size:.69rem;margin:.35rem 0 .5rem}
 .uh-auth-status{padding:.5rem .62rem;border-radius:10px;font-size:.7rem;font-weight:700;margin:.35rem 0;background:#f8fbff;border:1px solid #dce8f6;color:#375273}.uh-auth-status.ok{background:#ecfdf5;color:#047857;border-color:#a7f3d0}.uh-auth-status.err{background:#fff1f2;color:#be123c;border-color:#fecdd3}
 .stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label,.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label p{color:#30425f!important;font-weight:750!important;font-size:.7rem!important}
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{border:1px solid #c8d4e3!important;border-radius:11px!important;background:rgba(255,255,255,.96)!important;color:#0f172a!important;min-height:36px!important;box-shadow:inset 0 1px 1px rgba(8,26,58,.02)!important;font-size:.83rem!important;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease!important}
+.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{border:1px solid #c8d4e3!important;border-radius:11px!important;background:rgba(255,255,255,.96)!important;color:#0f172a!important;min-height:40px!important;box-shadow:inset 0 1px 1px rgba(8,26,58,.02)!important;font-size:.83rem!important;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease!important}
 .stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input:focus{border-color:#5b8def!important;box-shadow:0 0 0 3px rgba(37,99,235,.11),0 5px 14px rgba(37,99,235,.06)!important;transform:translateY(-1px)}
-.stApp:has(.uh-auth-shell) button{border-radius:11px!important;min-height:36px!important;font-weight:800!important;transition:transform .16s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease!important}
+.stApp:has(.uh-auth-shell) button{border-radius:11px!important;min-height:40px!important;font-weight:800!important;transition:transform .16s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease!important}
 .stApp:has(.uh-auth-shell) button:hover{transform:translateY(-2px)}
 .stApp:has(.uh-auth-shell) button:active{transform:translateY(0) scale(.985)}
 .stApp:has(.uh-auth-shell) button[kind="primary"]{background:linear-gradient(135deg,#2563eb 0%,#4f7cff 62%,#60a5fa 100%)!important;color:#fff!important;border:0!important;box-shadow:0 10px 20px rgba(37,99,235,.20)!important;position:relative;overflow:hidden}
@@ -950,7 +948,10 @@ html,body,[data-testid="stAppViewContainer"]{overflow:hidden!important}
 @keyframes uhFloat{0%,100%{transform:translate3d(0,0,0)}50%{transform:translate3d(10px,-12px,0)}}
 @keyframes uhPulse{0%,100%{transform:scale(.98);opacity:.9}50%{transform:scale(1.05);opacity:1}}
 @keyframes uhShimmer{0%{left:-35%}55%,100%{left:120%}}
-@media(max-width:640px){.uh-auth-shell{height:100dvh;padding:.35rem .5rem;overflow:hidden}.uh-auth-content{width:min(100%,390px);max-height:calc(100dvh - .7rem)}.uh-auth-hero{margin-bottom:.28rem}.uh-auth-logo-wrap,.uh-auth-logo-mark{width:48px;height:48px}.uh-auth-logo-mark{border-radius:17px;font-size:1.4rem}.uh-auth-hero h1{font-size:1.72rem!important}.uh-auth-tagline{font-size:.76rem}.uh-auth-subtitle{font-size:.6rem}.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{padding:.62rem!important;border-radius:17px!important}.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{min-height:40px!important}.stApp:has(.uh-auth-shell) button{min-height:41px!important}.uh-auth-shell:before{left:-140px}.uh-auth-shell:after{right:-150px}}
+@media(max-width:640px){.uh-auth-shell{min-height:100dvh;padding:.35rem .45rem;overflow:visible}.uh-auth-content{width:min(100%,410px)}.uh-auth-hero{margin-bottom:.48rem}.uh-auth-logo-wrap,.uh-auth-logo-mark{width:52px;height:52px}.uh-auth-logo-mark{border-radius:17px;font-size:1.4rem}.uh-auth-hero h1{font-size:1.9rem!important}.uh-auth-tagline{font-size:.82rem}.uh-auth-subtitle{font-size:.66rem}.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{padding:.78rem!important;border-radius:19px!important}.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{min-height:40px!important}.stApp:has(.uh-auth-shell) button{min-height:41px!important}.uh-auth-shell:before{left:-110px}.uh-auth-shell:after{right:-120px}}
+
+/* Student dashboard / profile polish */
+.uh-app-context{display:flex;align-items:baseline;gap:.7rem;margin:.1rem 0 .8rem;color:#0b1f44;font-weight:900;letter-spacing:-.02em}.uh-app-context span{font-size:.9rem}.uh-app-context small{font-size:.7rem;color:#71819a;font-weight:700}.uh-side-label{font-size:.63rem;letter-spacing:.12em;font-weight:850;color:#8b9ab0;margin:.7rem 0 .25rem}.uh-side-current{padding:.55rem .7rem;border-radius:10px;background:#eaf2ff;color:#174ea6;font-weight:800;font-size:.82rem}.uh-dashboard-hero{display:flex;justify-content:space-between;align-items:center;gap:1.5rem;padding:1.15rem 1.35rem;border-radius:22px;background:linear-gradient(135deg,#0a1d42 0%,#123d80 62%,#2563eb 100%);box-shadow:0 18px 42px rgba(8,26,58,.16);margin-bottom:1rem;overflow:hidden;position:relative}.uh-dashboard-hero:after{content:"";position:absolute;width:260px;height:260px;border-radius:50%;right:-100px;top:-150px;background:rgba(255,255,255,.09)}.uh-dashboard-eyebrow{font-size:.6rem;letter-spacing:.14em;color:#9fc4ff;font-weight:850;margin-bottom:.35rem}.uh-dashboard-hero h1{color:#fff!important;margin:0!important;font-size:1.7rem!important;letter-spacing:-.04em}.uh-dashboard-hero p{color:#dbeafe!important;margin:.3rem 0 0;font-size:.76rem}.uh-dashboard-trust{min-width:125px;position:relative;z-index:1;color:#fff;text-align:right}.uh-dashboard-trust span{display:block;font-size:.63rem;color:#bfdbfe}.uh-dashboard-trust strong{display:block;font-size:1.45rem}.uh-progress{height:5px;background:rgba(255,255,255,.18);border-radius:99px;margin-top:.35rem;overflow:hidden}.uh-progress i{display:block;height:100%;background:#fb923c;border-radius:99px}.uh-stat-card{display:flex;align-items:center;gap:.7rem;background:#fff;border:1px solid #e2eaf4;border-radius:17px;padding:.75rem .8rem;box-shadow:0 8px 22px rgba(8,26,58,.055);min-height:70px}.uh-stat-icon,.uh-action-icon,.uh-info-icon{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:#edf4ff;font-size:1.05rem;flex:none}.uh-stat-card span,.uh-info-card span{display:block;color:#7a8aa1;font-size:.62rem;font-weight:750}.uh-stat-card strong{display:block;color:#0b1f44;font-size:1.08rem;margin-top:.08rem}.uh-section-heading{display:flex;justify-content:space-between;align-items:end;margin:1.25rem 0 .7rem}.uh-section-heading span,.uh-page-kicker{font-size:.58rem;letter-spacing:.13em;color:#2563eb;font-weight:900}.uh-section-heading h2{font-size:1.05rem!important;color:#10274e!important;margin:.12rem 0 0!important}.uh-section-space{margin-top:1.15rem}.uh-action-card{height:112px;padding:.85rem;border:1px solid #e1e9f3;border-radius:17px;background:linear-gradient(180deg,#fff,#f9fbff);box-shadow:0 8px 22px rgba(8,26,58,.045);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}.uh-action-card:hover{transform:translateY(-3px);box-shadow:0 14px 28px rgba(8,26,58,.09);border-color:#bfd5f7}.uh-action-icon{width:32px;height:32px;border-radius:10px}.uh-action-card h3{font-size:.85rem!important;color:#10274e!important;margin:.35rem 0 .08rem!important}.uh-action-card p{font-size:.64rem;color:#71819a!important;margin:0!important}.uh-info-card{display:flex;gap:.8rem;align-items:center;padding:.85rem 1rem;border:1px solid #e1e9f3;border-radius:17px;background:#fff;box-shadow:0 8px 22px rgba(8,26,58,.045)}.uh-info-icon{background:#fff3ea}.uh-info-card strong{display:block;color:#10274e;font-size:1.12rem}.uh-info-card p{font-size:.63rem;color:#7a8aa1;margin:.12rem 0 0}.uh-soft-alert{margin-top:1rem;padding:.7rem .85rem;border:1px solid #bfdbfe;background:#eff6ff;border-radius:13px;color:#1e40af;font-size:.7rem}.uh-profile-photo-placeholder{width:150px;height:150px;border-radius:28px;background:linear-gradient(135deg,#0a1d42,#2563eb);color:#fff;display:flex;align-items:center;justify-content:center;font-size:2.4rem;font-weight:900;box-shadow:0 16px 34px rgba(8,26,58,.15)}.uh-profile-main-card{padding:1rem 1.1rem;border-radius:18px;border:1px solid #e0e8f2;background:#fff;box-shadow:0 10px 25px rgba(8,26,58,.05)}.uh-profile-name{font-size:1.35rem;font-weight:900;color:#0b1f44}.uh-profile-id{font-size:.72rem;color:#71819a;margin-top:.2rem}.uh-profile-badges{display:flex;gap:.45rem;margin-top:.65rem;flex-wrap:wrap}.uh-profile-badge{padding:.25rem .55rem;border-radius:999px;font-size:.62rem;font-weight:850}.uh-profile-badge.green{background:#dcfce7;color:#166534}.uh-profile-badge.blue{background:#eaf2ff;color:#174ea6}.uh-detail-card{padding:.7rem .8rem;border:1px solid #e2eaf4;background:#fff;border-radius:13px;margin-bottom:.55rem}.uh-detail-card span{display:block;color:#7a8aa1;font-size:.6rem;font-weight:750}.uh-detail-card strong{display:block;color:#10274e;font-size:.78rem;margin-top:.12rem}@media(max-width:760px){.uh-dashboard-hero{padding:1rem;display:block}.uh-dashboard-hero h1{font-size:1.4rem!important}.uh-dashboard-trust{text-align:left;margin-top:.8rem}.uh-stat-card{min-height:62px;padding:.6rem}.uh-action-card{height:105px}.uh-profile-photo-placeholder{width:110px;height:110px;border-radius:22px;font-size:1.8rem}}
 </style>
 """
 
@@ -1001,7 +1002,7 @@ def _render_auth_shell_end():
 def _render_auth_hero():
     st.markdown(
         '<div class="uh-auth-hero">'
-        ''
+        '<div class="uh-auth-kicker"><span class="uh-auth-kicker-dot"></span>Student-powered campus network</div>'
         '<div class="uh-auth-logo-wrap"><div class="uh-auth-logo-ring"></div><div class="uh-auth-logo-mark">🎓</div></div>'
         '<h1>UNI HELP</h1>'
         '<p class="uh-auth-tagline">Your campus. Your community.<br>Someone can help.</p>'
@@ -1320,11 +1321,7 @@ def render_admin_login():
 # -----------------------------------------------------------------------------
 
 def render_dashboard(user):
-    st.markdown(f"## Welcome, {user['full_name']} 👋")
-    if not user["verified"]:
-        st.warning("Your email isn't verified yet. Some actions may be limited. "
-                   "Go to the sidebar → Verify Email.")
-
+    """Clean student home dashboard. Feature modules remain in navigation."""
     conn = get_conn()
     completed_deliveries = conn.execute(
         "SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (user["id"],)
@@ -1336,51 +1333,49 @@ def render_dashboard(user):
     earnings = conn.execute(
         "SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (user["id"],)
     ).fetchone()["s"]
+    active_requests = conn.execute(
+        "SELECT COUNT(*) c FROM requests WHERE requester_id=? AND status NOT IN ('COMPLETED','CANCELLED')",
+        (user["id"],),
+    ).fetchone()["c"]
     conn.close()
 
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Trust Score", f"{user['trust_score']}/100")
     avg_rating = round(user["rating_sum"] / user["rating_count"], 1) if user["rating_count"] else 0
-    m2.metric("Rating", f"⭐ {avg_rating}" if user["rating_count"] else "No ratings yet")
-    m3.metric("Tasks Completed", completed_deliveries)
-    m4.metric("Active Borrowings", active_borrow)
-    m5.metric("Earnings (prototype)", f"₹{earnings:.0f}")
-    m6.metric("UniCoins", f"🪙 {user['unicoins']}")
+    safe_name = str(user['full_name']).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+    st.markdown(f"""<div class='uh-dashboard-hero'>
+        <div><div class='uh-dashboard-eyebrow'>YOUR CAMPUS, YOUR NETWORK</div>
+        <h1>Welcome back, {safe_name} <span>👋</span></h1>
+        <p>Pick up where you left off and make campus life a little easier.</p></div>
+        <div class='uh-dashboard-trust'><span>Trust score</span><strong>{int(user['trust_score'])}/100</strong>
+        <div class='uh-progress'><i style='width:{int(user['trust_score'])}%;'></i></div></div>
+    </div>""", unsafe_allow_html=True)
 
-    st.markdown("#### Quick actions")
-    c1, c2, c3, c4 = st.columns(4)
-    if c1.button("📦 Delivery", use_container_width=True):
-        st.session_state["nav"] = "Delivery"; st.rerun()
-    if c2.button("🤝 Borrow", use_container_width=True):
-        st.session_state["nav"] = "Borrowing"; st.rerun()
-    if c3.button("🛠 Micro Task", use_container_width=True):
-        st.session_state["nav"] = "Micro-Tasks"; st.rerun()
-    if c4.button("💰 Wallet / Earn", use_container_width=True):
-        st.session_state["nav"] = "Wallet"; st.rerun()
+    stats = [("⭐", "Rating", f"{avg_rating:.1f}" if avg_rating else "New"),
+             ("📦", "Deliveries", str(completed_deliveries)),
+             ("🤝", "Borrowings", str(active_borrow)),
+             ("🪙", "UniCoins", f"{user['unicoins']:,}")]
+    cols = st.columns(4)
+    for col, (icon, label, value) in zip(cols, stats):
+        col.markdown(f"<div class='uh-stat-card'><div class='uh-stat-icon'>{icon}</div><div><span>{label}</span><strong>{value}</strong></div></div>", unsafe_allow_html=True)
 
-    st.divider()
-    colL, colR = st.columns(2)
-    with colL:
-        st.markdown("#### 📨 Recent notifications")
-        notifs = get_notifications(user["id"], limit=6)
-        if not notifs:
-            st.caption("No notifications yet.")
-        for n in notifs:
-            prefix = "🔵 " if not n["is_read"] else ""
-            st.markdown(f"- {prefix}{n['message']}  \n  <small>{n['created_at'][:19].replace('T',' ')}</small>", unsafe_allow_html=True)
+    st.markdown("<div class='uh-section-heading'><div><span>GET THINGS DONE</span><h2>What do you need today?</h2></div></div>", unsafe_allow_html=True)
+    a1, a2, a3 = st.columns(3)
+    actions = [(a1, "📦", "Delivery", "Send or accept a campus delivery", "Delivery"),
+               (a2, "🤝", "Borrow", "Share useful things with students", "Borrowing"),
+               (a3, "⚡", "Micro-Tasks", "Earn by helping around campus", "Micro-Tasks")]
+    for col, icon, title, copy, nav in actions:
+        with col:
+            st.markdown(f"<div class='uh-action-card'><div class='uh-action-icon'>{icon}</div><h3>{title}</h3><p>{copy}</p></div>", unsafe_allow_html=True)
+            if st.button(f"Open {title} →", key=f"dash_{nav}", use_container_width=True):
+                st.session_state["nav"] = nav; st.rerun()
 
-    with colR:
-        st.markdown("#### 📦 Your active delivery requests")
-        conn = get_conn()
-        active = conn.execute(
-            "SELECT * FROM requests WHERE requester_id=? AND status NOT IN ('COMPLETED','CANCELLED') ORDER BY id DESC",
-            (user["id"],),
-        ).fetchall()
-        conn.close()
-        if not active:
-            st.caption("No active requests.")
-        for r in active:
-            st.markdown(f"**{r['item_name']}** — {status_badge(r['status'])}", unsafe_allow_html=True)
+    st.markdown("<div class='uh-section-heading uh-section-space'><div><span>AT A GLANCE</span><h2>Your campus activity</h2></div></div>", unsafe_allow_html=True)
+    b1, b2 = st.columns(2)
+    with b1:
+        st.markdown(f"<div class='uh-info-card'><div class='uh-info-icon'>🛍️</div><div><span>Active requests</span><strong>{active_requests}</strong><p>Delivery requests you are currently waiting on.</p></div></div>", unsafe_allow_html=True)
+    with b2:
+        st.markdown(f"<div class='uh-info-card'><div class='uh-info-icon'>💰</div><div><span>Total earnings</span><strong>₹{earnings:,.0f}</strong><p>Released rewards earned through UNI HELP.</p></div></div>", unsafe_allow_html=True)
+    if not user["verified"]:
+        st.markdown("<div class='uh-soft-alert'>📧 <strong>Email verification pending.</strong> Verify your email to unlock all campus features.</div>", unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
@@ -2339,6 +2334,61 @@ def render_admin(user):
 # 7. MAIN ROUTER
 # =============================================================================
 
+def render_profile(user):
+    fresh = user_by_id(user["id"])
+    if not fresh:
+        st.error("Unable to load your profile right now.")
+        return
+    user = dict(fresh)
+    st.markdown("<div class='uh-page-kicker'>ACCOUNT</div>", unsafe_allow_html=True)
+    st.markdown("# My Profile")
+    st.caption("Manage your campus identity and profile photo.")
+    photo_path = user.get("profile_photo_path")
+    left, right = st.columns([1.15, 2.5])
+    with left:
+        if photo_path and os.path.exists(photo_path):
+            st.image(photo_path, width=150)
+        else:
+            initials = ''.join(part[0] for part in str(user['full_name']).split()[:2]).upper() or "U"
+            st.markdown(f'<div class="uh-profile-photo-placeholder">{initials}</div>', unsafe_allow_html=True)
+    with right:
+        safe_name = str(user['full_name']).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
+        st.markdown(f"<div class='uh-profile-main-card'><div class='uh-profile-name'>{safe_name}</div><div class='uh-profile-id'>Student ID · <strong>{user['student_id'] or '—'}</strong></div><div class='uh-profile-badges'><span class='uh-profile-badge green'>✓ {'Verified' if user['verified'] else 'Verification pending'}</span><span class='uh-profile-badge blue'>Trust {user['trust_score']}/100</span></div></div>", unsafe_allow_html=True)
+    st.markdown("### Profile photo")
+    uploaded = st.file_uploader("Add or change your profile photo", type=["png", "jpg", "jpeg", "webp"], key="student_profile_photo")
+    if uploaded is not None and st.button("Save Profile Photo", type="primary", use_container_width=True):
+        try:
+            ext = os.path.splitext(uploaded.name)[1].lower() or ".jpg"
+            safe_name = f"profile_{user['id']}_{int(time.time())}{ext}"
+            path = os.path.join(PHOTOS_DIR, safe_name)
+            with open(path, "wb") as fh:
+                fh.write(uploaded.getbuffer())
+            conn = get_conn(); conn.execute("UPDATE users SET profile_photo_path=? WHERE id=?", (path, user["id"])); conn.commit(); conn.close()
+            st.session_state["user"] = dict(user_by_id(user["id"]))
+            st.success("Profile photo updated successfully."); st.rerun()
+        except Exception:
+            st.error("Unable to update your profile photo. Please try again.")
+    st.markdown("### Personal information")
+    info1, info2 = st.columns(2)
+    info1.markdown(f"<div class='uh-detail-card'><span>Full Name</span><strong>{safe_name}</strong></div>", unsafe_allow_html=True)
+    info2.markdown(f"<div class='uh-detail-card'><span>Student ID</span><strong>{user['student_id'] or '—'}</strong></div>", unsafe_allow_html=True)
+    info1.markdown(f"<div class='uh-detail-card'><span>Email</span><strong>{user['email']}</strong></div>", unsafe_allow_html=True)
+    info2.markdown(f"<div class='uh-detail-card'><span>Phone</span><strong>{user['phone'] or '—'}</strong></div>", unsafe_allow_html=True)
+    st.markdown("### Your UNI HELP stats")
+    avg = round(user["rating_sum"] / user["rating_count"], 1) if user["rating_count"] else 0
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Trust Score", f"{user['trust_score']}/100"); p2.metric("Rating", f"⭐ {avg:.1f}" if avg else "—"); p3.metric("UniCoins", f"🪙 {user['unicoins']}"); p4.metric("Member since", str(user['created_at'])[:10])
+
+
+def render_student_topbar(user):
+    top_left, top_right = st.columns([5, 1])
+    with top_left:
+        current = st.session_state.get("nav", "Dashboard")
+        st.markdown(f"<div class='uh-app-context'><span>🎓 UNI HELP</span><small>{current}</small></div>", unsafe_allow_html=True)
+    with top_right:
+        if st.button("⌂ Dashboard", key="top_dashboard", use_container_width=True):
+            st.session_state["nav"] = "Dashboard"; st.rerun()
+
 def render_sidebar(user):
     if user["role"] == "admin":
         st.sidebar.markdown("### 🛡 UNI HELP ADMIN")
@@ -2357,16 +2407,14 @@ def render_sidebar(user):
     if not user["verified"]:
         st.sidebar.warning("Email not verified")
 
-    unread = len(get_notifications(user["id"], unread_only=True))
-    options = ["Dashboard", "Delivery", "Borrowing", "Micro-Tasks",
-               f"Notifications ({unread})" if unread else "Notifications",
-               "Wallet", "Disputes"]
-    clean_map = {opt: opt.split(" (")[0] for opt in options}
+    options = ["Delivery", "Borrowing", "Micro-Tasks", "Wallet", "Profile"]
     current_clean = st.session_state.get("nav", "Dashboard")
-    display_current = next((o for o in options if clean_map[o] == current_clean), options[0])
-    choice = st.sidebar.radio("Navigate", options, index=options.index(display_current))
-    st.session_state["nav"] = clean_map[choice]
-
+    st.sidebar.markdown("<div class='uh-side-label'>NAVIGATE</div>", unsafe_allow_html=True)
+    if current_clean in options:
+        choice = st.sidebar.radio("Navigate", options, index=options.index(current_clean), label_visibility="collapsed")
+        st.session_state["nav"] = choice
+    else:
+        st.sidebar.markdown("<div class='uh-side-current'>⌂ Dashboard</div>", unsafe_allow_html=True)
     st.sidebar.divider()
     if not user["verified"]:
         if st.sidebar.button("📧 Verify Email"):
@@ -2401,6 +2449,8 @@ def main():
     refresh_current_user()
     user = st.session_state["user"]
     render_sidebar(user)
+    if user["role"] != "admin":
+        render_student_topbar(user)
 
     nav = st.session_state.get("nav", "Dashboard")
     if nav == "Dashboard":
@@ -2415,6 +2465,10 @@ def main():
         render_notifications(user)
     elif nav == "Wallet":
         render_wallet(user)
+    elif nav == "Profile":
+        render_profile(user)
+    elif nav == "Notifications":
+        render_notifications(user)
     elif nav == "Disputes":
         render_disputes(user)
     elif nav == "Admin":
@@ -2423,5 +2477,4 @@ def main():
         render_dashboard(user)
 
 
-if __name__ == "__main__":
-    main()
+if __name__ 
