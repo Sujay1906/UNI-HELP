@@ -960,6 +960,45 @@ CUSTOM_CSS = """
 
 /* Student dashboard / profile polish */
 .uh-app-context{display:flex;align-items:baseline;gap:.7rem;margin:.1rem 0 .8rem;color:#0b1f44;font-weight:900;letter-spacing:-.02em}.uh-app-context span{font-size:.9rem}.uh-app-context small{font-size:.7rem;color:#71819a;font-weight:700}.uh-side-label{font-size:.63rem;letter-spacing:.12em;font-weight:850;color:#8b9ab0;margin:.7rem 0 .25rem}.uh-side-current{padding:.55rem .7rem;border-radius:10px;background:#eaf2ff;color:#174ea6;font-weight:800;font-size:.82rem}.uh-dashboard-hero{display:flex;justify-content:space-between;align-items:center;gap:1.5rem;padding:1.15rem 1.35rem;border-radius:22px;background:linear-gradient(135deg,#0a1d42 0%,#123d80 62%,#2563eb 100%);box-shadow:0 18px 42px rgba(8,26,58,.16);margin-bottom:1rem;overflow:hidden;position:relative}.uh-dashboard-hero:after{content:"";position:absolute;width:260px;height:260px;border-radius:50%;right:-100px;top:-150px;background:rgba(255,255,255,.09)}.uh-dashboard-eyebrow{font-size:.6rem;letter-spacing:.14em;color:#9fc4ff;font-weight:850;margin-bottom:.35rem}.uh-dashboard-hero h1{color:#fff!important;margin:0!important;font-size:1.7rem!important;letter-spacing:-.04em}.uh-dashboard-hero p{color:#dbeafe!important;margin:.3rem 0 0;font-size:.76rem}.uh-dashboard-trust{min-width:125px;position:relative;z-index:1;color:#fff;text-align:right}.uh-dashboard-trust span{display:block;font-size:.63rem;color:#bfdbfe}.uh-dashboard-trust strong{display:block;font-size:1.45rem}.uh-progress{height:5px;background:rgba(255,255,255,.18);border-radius:99px;margin-top:.35rem;overflow:hidden}.uh-progress i{display:block;height:100%;background:#fb923c;border-radius:99px}.uh-stat-card{display:flex;align-items:center;gap:.7rem;background:#fff;border:1px solid #e2eaf4;border-radius:17px;padding:.75rem .8rem;box-shadow:0 8px 22px rgba(8,26,58,.055);min-height:70px}.uh-stat-icon,.uh-action-icon,.uh-info-icon{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:#edf4ff;font-size:1.05rem;flex:none}.uh-stat-card span,.uh-info-card span{display:block;color:#7a8aa1;font-size:.62rem;font-weight:750}.uh-stat-card strong{display:block;color:#0b1f44;font-size:1.08rem;margin-top:.08rem}.uh-section-heading{display:flex;justify-content:space-between;align-items:end;margin:1.25rem 0 .7rem}.uh-section-heading span,.uh-page-kicker{font-size:.58rem;letter-spacing:.13em;color:#2563eb;font-weight:900}.uh-section-heading h2{font-size:1.05rem!important;color:#10274e!important;margin:.12rem 0 0!important}.uh-section-space{margin-top:1.15rem}.uh-action-card{height:112px;padding:.85rem;border:1px solid #e1e9f3;border-radius:17px;background:linear-gradient(180deg,#fff,#f9fbff);box-shadow:0 8px 22px rgba(8,26,58,.045);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}.uh-action-card:hover{transform:translateY(-3px);box-shadow:0 14px 28px rgba(8,26,58,.09);border-color:#bfd5f7}.uh-action-icon{width:32px;height:32px;border-radius:10px}.uh-action-card h3{font-size:.85rem!important;color:#10274e!important;margin:.35rem 0 .08rem!important}.uh-action-card p{font-size:.64rem;color:#71819a!important;margin:0!important}.uh-info-card{display:flex;gap:.8rem;align-items:center;padding:.85rem 1rem;border:1px solid #e1e9f3;border-radius:17px;background:#fff;box-shadow:0 8px 22px rgba(8,26,58,.045)}.uh-info-icon{background:#fff3ea}.uh-info-card strong{display:block;color:#10274e;font-size:1.12rem}.uh-info-card p{font-size:.63rem;color:#7a8aa1;margin:.12rem 0 0}.uh-soft-alert{margin-top:1rem;padding:.7rem .85rem;border:1px solid #bfdbfe;background:#eff6ff;border-radius:13px;color:#1e40af;font-size:.7rem}.uh-profile-photo-placeholder{width:150px;height:150px;border-radius:28px;background:linear-gradient(135deg,#0a1d42,#2563eb);color:#fff;display:flex;align-items:center;justify-content:center;font-size:2.4rem;font-weight:900;box-shadow:0 16px 34px rgba(8,26,58,.15)}.uh-profile-main-card{padding:1rem 1.1rem;border-radius:18px;border:1px solid #e0e8f2;background:#fff;box-shadow:0 10px 25px rgba(8,26,58,.05)}.uh-profile-name{font-size:1.35rem;font-weight:900;color:#0b1f44}.uh-profile-id{font-size:.72rem;color:#71819a;margin-top:.2rem}.uh-profile-badges{display:flex;gap:.45rem;margin-top:.65rem;flex-wrap:wrap}.uh-profile-badge{padding:.25rem .55rem;border-radius:999px;font-size:.62rem;font-weight:850}.uh-profile-badge.green{background:#dcfce7;color:#166534}.uh-profile-badge.blue{background:#eaf2ff;color:#174ea6}.uh-detail-card{padding:.7rem .8rem;border:1px solid #e2eaf4;background:#fff;border-radius:13px;margin-bottom:.55rem}.uh-detail-card span{display:block;color:#7a8aa1;font-size:.6rem;font-weight:750}.uh-detail-card strong{display:block;color:#10274e;font-size:.78rem;margin-top:.12rem}@media(max-width:760px){.uh-dashboard-hero{padding:1rem;display:block}.uh-dashboard-hero h1{font-size:1.4rem!important}.uh-dashboard-trust{text-align:left;margin-top:.8rem}.uh-stat-card{min-height:62px;padding:.6rem}.uh-action-card{height:105px}.uh-profile-photo-placeholder{width:110px;height:110px;border-radius:22px;font-size:1.8rem}}
+
+/* Premium admin control center */
+.uh-admin-shell{background:linear-gradient(135deg,#f7faff 0%,#eef5ff 55%,#fff8f1 100%);border:1px solid #e1e9f4;border-radius:24px;padding:1.15rem 1.25rem;margin-bottom:1rem;box-shadow:0 14px 38px rgba(8,26,58,.07)}
+.uh-admin-eyebrow{font-size:.58rem;letter-spacing:.16em;color:#2563eb;font-weight:900;text-transform:uppercase}
+.uh-admin-title{font-size:1.65rem;font-weight:900;color:#081a3a;letter-spacing:-.04em;margin:.15rem 0 .15rem}
+.uh-admin-subtitle{font-size:.73rem;color:#64748b;margin:0}
+.uh-admin-online{display:inline-flex;align-items:center;gap:.35rem;padding:.34rem .55rem;border-radius:999px;background:#ecfdf5;color:#047857;border:1px solid #bbf7d0;font-size:.62rem;font-weight:850}
+.uh-admin-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.10)}
+.uh-admin-metric{height:100%;min-height:92px;padding:.9rem 1rem;border:1px solid #e0e8f2;border-radius:17px;background:#fff;box-shadow:0 8px 22px rgba(8,26,58,.05);transition:transform .18s ease,box-shadow .18s ease}
+.uh-admin-metric:hover{transform:translateY(-2px);box-shadow:0 13px 28px rgba(8,26,58,.08)}
+.uh-admin-metric .icon{font-size:1.05rem;margin-bottom:.35rem}.uh-admin-metric .label{font-size:.62rem;color:#71819a;font-weight:750}.uh-admin-metric .value{font-size:1.35rem;color:#0b1f44;font-weight:900;line-height:1.05;margin-top:.12rem}.uh-admin-metric .hint{font-size:.57rem;color:#94a3b8;margin-top:.2rem}
+.uh-admin-section{font-size:1rem;font-weight:900;color:#10274e;margin:1rem 0 .55rem}
+.uh-admin-panel{padding:.85rem 1rem;border:1px solid #e1e9f3;border-radius:17px;background:#fff;box-shadow:0 8px 22px rgba(8,26,58,.045)}
+.uh-admin-panel-title{font-size:.78rem;font-weight:900;color:#10274e;margin-bottom:.25rem}.uh-admin-panel-copy{font-size:.64rem;color:#71819a}
+.uh-admin-alert{display:flex;align-items:center;gap:.65rem;padding:.7rem .8rem;border-radius:13px;border:1px solid #fed7aa;background:#fff7ed;color:#9a3412;font-size:.68rem;font-weight:750;margin-bottom:.5rem}.uh-admin-alert strong{display:block;color:#7c2d12;font-size:.78rem}.uh-admin-alert small{display:block;font-size:.6rem;color:#9a3412;font-weight:650}
+.uh-admin-activity{display:flex;gap:.65rem;align-items:flex-start;padding:.65rem 0;border-bottom:1px solid #eef2f7}.uh-admin-activity:last-child{border-bottom:0}.uh-admin-activity-icon{width:30px;height:30px;border-radius:10px;background:#edf4ff;display:flex;align-items:center;justify-content:center;flex:none}.uh-admin-activity strong{display:block;font-size:.68rem;color:#10274e}.uh-admin-activity span{display:block;font-size:.58rem;color:#8a99ad;margin-top:.12rem}
+.uh-admin-search{padding:.9rem;border-radius:17px;background:linear-gradient(135deg,#0b1f44,#174ea6);box-shadow:0 12px 28px rgba(23,78,166,.14);margin-bottom:.8rem}.uh-admin-search h3{color:#fff!important;font-size:.92rem!important;margin:0 0 .12rem!important}.uh-admin-search p{color:#bfdbfe!important;font-size:.62rem!important;margin:0 0 .6rem!important}
+.uh-admin-statline{height:7px;background:#edf2f7;border-radius:99px;overflow:hidden;margin-top:.45rem}.uh-admin-statline i{display:block;height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:99px}
+@media(max-width:760px){.uh-admin-shell{padding:.9rem;border-radius:18px}.uh-admin-title{font-size:1.35rem}.uh-admin-metric{min-height:80px;padding:.7rem}.uh-admin-metric .value{font-size:1.15rem}}
+
+.uh-student-shell{display:block}
+/* Mobile-first student app shell */
+.stApp:has(.uh-student-shell){background:#f7f7f5!important}
+.stApp:has(.uh-student-shell) [data-testid="stSidebar"]{display:none!important}
+.stApp:has(.uh-student-shell) .main .block-container{max-width:620px!important;padding:0 18px 96px!important;margin:0 auto!important}
+.stApp:has(.uh-student-shell) [data-testid="stHeader"]{background:transparent!important}
+.stApp:has(.uh-student-shell) .uh-app-header{display:flex;align-items:center;justify-content:space-between;padding:.85rem .05rem .5rem;position:sticky;top:0;z-index:20;background:rgba(247,247,245,.94);backdrop-filter:blur(14px)}
+.uh-app-header-brand{font-size:.7rem;font-weight:900;letter-spacing:.12em;color:#8b4a12;text-transform:uppercase}.uh-app-header-title{font-size:1.05rem;font-weight:900;color:#141414;letter-spacing:-.03em}.uh-app-header-user{font-size:.68rem;color:#737373;font-weight:700}
+.uh-header-icon button{width:42px!important;height:42px!important;min-height:42px!important;border-radius:50%!important;background:#fff!important;border:1px solid #e7e4df!important;box-shadow:0 4px 14px rgba(0,0,0,.06)!important;font-size:1.05rem!important;padding:0!important}
+.uh-home-greeting{margin:.35rem 0 .85rem}.uh-home-greeting .eyebrow{font-size:.64rem;letter-spacing:.13em;color:#9a5317;font-weight:900;text-transform:uppercase}.uh-home-greeting h1{font-size:2rem!important;line-height:1.04!important;letter-spacing:-.055em!important;color:#171717!important;margin:.2rem 0 0!important}.uh-home-greeting p{font-size:.78rem;color:#7b7b7b;margin:.35rem 0 0}
+.uh-coins-card{position:relative;overflow:hidden;border-radius:25px;padding:1.05rem 1.15rem 1.15rem;background:linear-gradient(135deg,#a94e05 0%,#c46109 52%,#e18a1a 100%);box-shadow:0 16px 32px rgba(163,76,5,.18);color:#fff;margin:.35rem 0 1.15rem}.uh-coins-card:after{content:"";position:absolute;width:170px;height:170px;border-radius:50%;right:-65px;top:-85px;background:rgba(255,255,255,.1)}.uh-coins-top{display:flex;justify-content:space-between;align-items:flex-start;position:relative;z-index:1}.uh-coins-label{font-size:.62rem;letter-spacing:.16em;font-weight:900;color:#ffe7a3}.uh-coins-value{font-size:2.6rem;line-height:1;font-weight:950;letter-spacing:-.06em;margin-top:.25rem}.uh-coins-value span{font-size:1rem;font-weight:700;opacity:.82;letter-spacing:-.02em}.uh-coins-badge{width:52px;height:52px;border-radius:17px;background:#fff;display:flex;align-items:center;justify-content:center;color:#c15b0a;font-size:1.45rem;box-shadow:0 7px 18px rgba(0,0,0,.12)}.uh-coins-bar{height:8px;border-radius:99px;background:rgba(255,255,255,.22);overflow:hidden;margin:1rem 0 .55rem;position:relative;z-index:1}.uh-coins-bar i{display:block;height:100%;border-radius:99px;background:#ffe27c}.uh-coins-foot{font-size:.7rem;color:#fff2d1;position:relative;z-index:1}
+.uh-impact-title{font-size:1.3rem!important;font-weight:900!important;letter-spacing:-.04em!important;color:#161616!important;margin:.25rem 0 .65rem!important}.uh-impact-grid{display:grid;gap:.55rem}.uh-impact-card{display:flex;align-items:center;gap:.75rem;background:#fff;border:1px solid #e8e5e0;border-radius:20px;padding:.72rem .82rem;box-shadow:0 5px 14px rgba(24,24,24,.045);transition:transform .18s ease,box-shadow .18s ease}.uh-impact-card:hover{transform:translateY(-2px);box-shadow:0 10px 22px rgba(24,24,24,.08)}.uh-impact-icon{width:48px;height:48px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:1.35rem;flex:none}.uh-impact-icon.blue{background:#e9f6fb;color:#1489a7}.uh-impact-icon.orange{background:#fff2e7;color:#b86417}.uh-impact-icon.yellow{background:#fff6cf;color:#c18a0b}.uh-impact-icon.red{background:#fde9e8;color:#c43e36}.uh-impact-copy{flex:1}.uh-impact-copy strong{display:block;font-size:.9rem;color:#171717}.uh-impact-copy span{display:block;font-size:.64rem;color:#8a8a8a;margin-top:.08rem}.uh-chevron{font-size:1.35rem;color:#777}
+.uh-nearby-head{display:flex;justify-content:space-between;align-items:center;margin:1.25rem 0 .55rem}.uh-nearby-head h2{font-size:1.25rem!important;color:#171717!important;margin:0!important;letter-spacing:-.04em}.uh-seeall button{border:0!important;background:transparent!important;color:#a45612!important;font-weight:850!important;font-size:.72rem!important;min-height:30px!important;box-shadow:none!important;padding:0!important}.uh-request-card{background:#fff;border:1px solid #e9e6e1;border-radius:20px;padding:.88rem;margin:.55rem 0;box-shadow:0 5px 14px rgba(24,24,24,.045)}.uh-request-card.urgent{background:#fff9f8;border-color:#f2d0cb}.uh-request-top{display:flex;align-items:center;gap:.65rem}.uh-request-avatar{width:40px;height:40px;border-radius:13px;background:#eaf5fa;color:#1387a5;display:flex;align-items:center;justify-content:center;font-weight:900}.uh-request-card.urgent .uh-request-avatar{background:#fde6e4;color:#c43e36}.uh-request-main{flex:1}.uh-request-main strong{font-size:.84rem;color:#191919}.uh-request-main span{display:block;font-size:.65rem;color:#8a8a8a;margin-top:.08rem}.uh-request-status{font-size:.57rem;font-weight:900;color:#b33d37;letter-spacing:.06em}.uh-request-meta{display:flex;align-items:center;gap:.4rem;color:#8a8a8a;font-size:.66rem;margin-top:.62rem}.uh-request-action button{background:#bd5b08!important;color:#fff!important;border:0!important;border-radius:12px!important;min-height:36px!important;box-shadow:0 6px 14px rgba(189,91,8,.18)!important;font-size:.68rem!important;font-weight:900!important}
+.uh-refresh{text-align:center;margin:.75rem 0;color:#ad5a15;font-size:.72rem;font-weight:800}.uh-refresh button{border:0!important;background:transparent!important;color:#ad5a15!important;box-shadow:none!important;font-weight:800!important}
+.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);width:min(590px,calc(100% - 22px));z-index:100;background:rgba(255,255,255,.96);border:1px solid #e6e2dc;border-radius:24px;box-shadow:0 12px 32px rgba(0,0,0,.13);padding:.45rem .45rem .38rem;backdrop-filter:blur(16px)}
+.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav [data-testid="column"]{display:flex;align-items:center;justify-content:center}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav button{border:0!important;background:transparent!important;color:#777!important;box-shadow:none!important;min-height:45px!important;padding:.2rem .1rem!important;font-size:.68rem!important;font-weight:800!important}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav button:hover{color:#a9530c!important;transform:none!important}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav .uh-nav-active button{color:#a9530c!important}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav .uh-nav-plus button{width:56px!important;height:56px!important;min-height:56px!important;border-radius:19px!important;background:#bd5b08!important;color:#fff!important;font-size:1.6rem!important;box-shadow:0 9px 18px rgba(189,91,8,.25)!important;margin-top:-20px!important}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav [data-testid="stHorizontalBlock"]{gap:.1rem}
+.uh-page-card{background:#fff;border:1px solid #e9e6e1;border-radius:22px;padding:.95rem;box-shadow:0 6px 18px rgba(24,24,24,.05)}.stApp:has(.uh-student-shell) .st-key-impact_borrow button,.stApp:has(.uh-student-shell) .st-key-impact_lend button,.stApp:has(.uh-student-shell) .st-key-impact_tasks button,.stApp:has(.uh-student-shell) .st-key-impact_help button{height:64px!important;min-height:64px!important;background:#fff!important;color:#171717!important;border:1px solid #e8e5e0!important;border-radius:20px!important;box-shadow:0 5px 14px rgba(24,24,24,.045)!important;text-align:left!important;padding:0 1rem!important;font-size:.88rem!important;font-weight:850!important;transition:transform .18s ease,box-shadow .18s ease!important}.stApp:has(.uh-student-shell) .st-key-impact_borrow button:hover,.stApp:has(.uh-student-shell) .st-key-impact_lend button:hover,.stApp:has(.uh-student-shell) .st-key-impact_tasks button:hover,.stApp:has(.uh-student-shell) .st-key-impact_help button:hover{transform:translateY(-2px)!important;box-shadow:0 10px 22px rgba(24,24,24,.08)!important}
+.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab-list"]{background:#efede9;border-radius:13px;padding:.2rem;gap:.15rem}.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab"]{height:34px;border-radius:10px;color:#777;font-size:.65rem;font-weight:800}.stApp:has(.uh-student-shell) .stTabs [aria-selected="true"]{background:#fff;color:#a6530c;box-shadow:0 3px 9px rgba(0,0,0,.06)}
+@media(max-width:640px){.stApp:has(.uh-student-shell) .main .block-container{padding-left:12px!important;padding-right:12px!important;padding-bottom:95px!important}.uh-home-greeting h1{font-size:1.72rem!important}.uh-coins-card{border-radius:22px;padding:.95rem}.uh-coins-value{font-size:2.35rem}.uh-impact-card{border-radius:18px}.uh-impact-icon{width:44px;height:44px}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav{bottom:7px;width:calc(100% - 14px);border-radius:22px}}
 </style>
 """
 
@@ -1360,7 +1399,7 @@ def render_admin_login():
 # -----------------------------------------------------------------------------
 
 def render_dashboard(user):
-    """Clean student home dashboard. Feature modules remain in navigation."""
+    """Mobile-first student home. Uses existing SQLite data and existing module routes."""
     conn = get_conn()
     completed_deliveries = conn.execute(
         "SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (user["id"],)
@@ -1376,45 +1415,83 @@ def render_dashboard(user):
         "SELECT COUNT(*) c FROM requests WHERE requester_id=? AND status NOT IN ('COMPLETED','CANCELLED')",
         (user["id"],),
     ).fetchone()["c"]
+    nearby = conn.execute(
+        """SELECT r.*, u.full_name requester_name FROM requests r
+           JOIN users u ON u.id=r.requester_id
+           WHERE r.requester_id != ? AND r.status='CREATED'
+           ORDER BY r.id DESC LIMIT 3""", (user["id"],)
+    ).fetchall()
+    unread = conn.execute("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0", (user["id"],)).fetchone()["c"]
     conn.close()
 
-    avg_rating = round(user["rating_sum"] / user["rating_count"], 1) if user["rating_count"] else 0
     safe_name = str(user['full_name']).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-    st.markdown(f"""<div class='uh-dashboard-hero'>
-        <div><div class='uh-dashboard-eyebrow'>YOUR CAMPUS, YOUR NETWORK</div>
-        <h1>Welcome back, {safe_name} <span>👋</span></h1>
-        <p>Pick up where you left off and make campus life a little easier.</p></div>
-        <div class='uh-dashboard-trust'><span>Trust score</span><strong>{int(user['trust_score'])}/100</strong>
-        <div class='uh-progress'><i style='width:{int(user['trust_score'])}%;'></i></div></div>
+    coins = int(user.get('unicoins') or 0)
+    coin_progress = min(100, int((coins / 500) * 100))
+
+    st.markdown(f"""<div class='uh-home-greeting'>
+        <div class='eyebrow'>UNI HELP • CAMPUS MARKETPLACE</div>
+        <h1>Welcome back, {safe_name} 👋</h1>
+        <p>Small actions. Real campus impact.</p>
     </div>""", unsafe_allow_html=True)
 
-    stats = [("⭐", "Rating", f"{avg_rating:.1f}" if avg_rating else "New"),
-             ("📦", "Deliveries", str(completed_deliveries)),
-             ("🤝", "Borrowings", str(active_borrow)),
-             ("🪙", "UniCoins", f"{user['unicoins']:,}")]
-    cols = st.columns(4)
-    for col, (icon, label, value) in zip(cols, stats):
-        col.markdown(f"<div class='uh-stat-card'><div class='uh-stat-icon'>{icon}</div><div><span>{label}</span><strong>{value}</strong></div></div>", unsafe_allow_html=True)
+    st.markdown(f"""<div class='uh-coins-card'>
+        <div class='uh-coins-top'><div><div class='uh-coins-label'>UNI COINS</div>
+        <div class='uh-coins-value'>{coins} <span>/ 500</span></div></div>
+        <div class='uh-coins-badge'>✦</div></div>
+        <div class='uh-coins-bar'><i style='width:{coin_progress}%'></i></div>
+        <div class='uh-coins-foot'>Keep helping to build your campus reputation.</div>
+    </div>""", unsafe_allow_html=True)
 
-    st.markdown("<div class='uh-section-heading'><div><span>GET THINGS DONE</span><h2>What do you need today?</h2></div></div>", unsafe_allow_html=True)
-    a1, a2, a3 = st.columns(3)
-    actions = [(a1, "📦", "Delivery", "Send or accept a campus delivery", "Delivery"),
-               (a2, "🤝", "Borrow", "Share useful things with students", "Borrowing"),
-               (a3, "⚡", "Micro-Tasks", "Earn by helping around campus", "Micro-Tasks")]
-    for col, icon, title, copy, nav in actions:
-        with col:
-            st.markdown(f"<div class='uh-action-card'><div class='uh-action-icon'>{icon}</div><h3>{title}</h3><p>{copy}</p></div>", unsafe_allow_html=True)
-            if st.button(f"Open {title} →", key=f"dash_{nav}", use_container_width=True):
-                st.session_state["nav"] = nav; st.rerun()
+    st.markdown("<div class='uh-impact-title'>Make an impact</div>", unsafe_allow_html=True)
+    impact = [
+        ("🔎", "blue", "Find to borrow", "Discover useful items from students", "Borrowing", "impact_borrow"),
+        ("📦", "orange", "Lend an item", "Share something another student needs", "Borrowing", "impact_lend"),
+        ("☷", "yellow", "Find tasks", "Earn UniCoins by helping around campus", "Micro-Tasks", "impact_tasks"),
+        ("!", "red", "Need help", "Create a delivery or ask your campus community", "Delivery", "impact_help"),
+    ]
+    for icon, tone, title, copy, nav, key in impact:
+        if st.button(f"{icon}   {title}   ›", key=key, use_container_width=True):
+            st.session_state['nav'] = nav
+            st.rerun()
 
-    st.markdown("<div class='uh-section-heading uh-section-space'><div><span>AT A GLANCE</span><h2>Your campus activity</h2></div></div>", unsafe_allow_html=True)
-    b1, b2 = st.columns(2)
-    with b1:
-        st.markdown(f"<div class='uh-info-card'><div class='uh-info-icon'>🛍️</div><div><span>Active requests</span><strong>{active_requests}</strong><p>Delivery requests you are currently waiting on.</p></div></div>", unsafe_allow_html=True)
-    with b2:
-        st.markdown(f"<div class='uh-info-card'><div class='uh-info-icon'>💰</div><div><span>Total earnings</span><strong>₹{earnings:,.0f}</strong><p>Released rewards earned through UNI HELP.</p></div></div>", unsafe_allow_html=True)
+    st.markdown("<div class='uh-nearby-head'><h2>Nearby requests</h2></div>", unsafe_allow_html=True)
+    if not nearby:
+        st.markdown("<div class='uh-page-card'><strong>No nearby requests yet</strong><div style='font-size:.7rem;color:#888;margin-top:.25rem'>New campus requests will appear here.</div></div>", unsafe_allow_html=True)
+    else:
+        for r in nearby:
+            name = str(r['requester_name'] or 'Student')
+            initial = name[0].upper()
+            urgent = 'urgent' in str(r['item_name'] or '').lower() or 'urgent' in str(r['notes'] or '').lower()
+            location = r['pickup_location'] or 'Campus'
+            st.markdown(f"""<div class='uh-request-card {'urgent' if urgent else ''}'>
+                <div class='uh-request-top'><div class='uh-request-avatar'>{initial}</div><div class='uh-request-main'>
+                <strong>{str(r['item_name']).replace('<','&lt;').replace('>','&gt;')}</strong><span>{name} • {str(location).replace('<','&lt;').replace('>','&gt;')}</span></div>
+                <div class='uh-request-status'>{'URGENT' if urgent else 'OPEN'}</div></div>
+                <div class='uh-request-meta'>⌖ Reward ₹{float(r['reward']):.0f} · {str(r['destination'] or 'Campus')}</div>
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown("<div class='uh-refresh'>↻ &nbsp;Live campus requests</div>", unsafe_allow_html=True)
+
     if not user["verified"]:
         st.markdown("<div class='uh-soft-alert'>📧 <strong>Email verification pending.</strong> Verify your email to unlock all campus features.</div>", unsafe_allow_html=True)
+
+
+def render_leaders(user):
+    """Lightweight leaderboard using existing users/trust/UniCoins; no new database tables."""
+    conn = get_conn()
+    leaders = conn.execute(
+        """SELECT full_name, student_id, trust_score, rating_sum, rating_count, unicoins
+           FROM users WHERE role='student' AND is_suspended=0
+           ORDER BY trust_score DESC, unicoins DESC LIMIT 10"""
+    ).fetchall()
+    conn.close()
+    st.markdown("<div class='uh-home-greeting'><div class='eyebrow'>CAMPUS COMMUNITY</div><h1>Leaders 🏆</h1><p>Students making a difference through verified help.</p></div>", unsafe_allow_html=True)
+    for i, row in enumerate(leaders, 1):
+        avg = round(row['rating_sum'] / row['rating_count'], 1) if row['rating_count'] else 0
+        name = str(row['full_name'] or 'Student')
+        st.markdown(f"""<div class='uh-request-card'><div class='uh-request-top'><div class='uh-request-avatar'>{i}</div>
+        <div class='uh-request-main'><strong>{name}</strong><span>Trust {row['trust_score']}/100 · ⭐ {avg if avg else 'New'}</span></div>
+        <div class='uh-request-status' style='color:#a45612'>🪙 {row['unicoins']}</div></div></div>""", unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
@@ -2281,91 +2358,272 @@ def render_admin_student_profile(admin_user, student_id):
         st.session_state.pop("admin_profile_user_id", None); st.rerun()
 
 
+def _admin_metric_card(icon, label, value, hint=""):
+    st.markdown(
+        f'<div class="uh-admin-metric"><div class="icon">{icon}</div>'
+        f'<div class="label">{label}</div><div class="value">{value}</div>'
+        f'<div class="hint">{hint}</div></div>', unsafe_allow_html=True
+    )
+
+
 def render_admin(user):
+    """Professional platform-management dashboard using the existing tables."""
     if user["role"] != "admin":
-        st.error("Access denied. Admins only."); return
+        st.error("Access denied. Admins only.")
+        return
+
     if st.session_state.get("admin_profile_user_id"):
-        render_admin_student_profile(user, st.session_state["admin_profile_user_id"]); return
-    if not EMAIL_CONFIGURED:
-        st.warning("⚙️ SMTP is not configured. Add SMTP_HOST, SMTP_PORT, SMTP_USERNAME and SMTP_PASSWORD to Streamlit Secrets before enabling email OTPs.")
-    if not EMAIL_CONFIGURED or not SMS_CONFIGURED:
-        missing=[]
-        if not EMAIL_CONFIGURED: missing.append("email SMTP")
-        if not SMS_CONFIGURED: missing.append("SMS/Twilio")
-        st.warning("Authentication configuration incomplete: " + ", ".join(missing) + ".")
-    st.markdown("## 🛡 Admin Dashboard")
+        render_admin_student_profile(user, st.session_state["admin_profile_user_id"])
+        return
+
     conn = get_conn()
     total_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student'").fetchone()["c"]
     verified_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND verified=1").fetchone()["c"]
+    active_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND is_suspended=0").fetchone()["c"]
+    suspended = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND is_suspended=1").fetchone()["c"]
     active_requests = conn.execute("SELECT COUNT(*) c FROM requests WHERE status NOT IN ('COMPLETED','CANCELLED')").fetchone()["c"]
-    deliveries = conn.execute("SELECT COUNT(*) c FROM requests").fetchone()["c"]
-    borrowings = conn.execute("SELECT COUNT(*) c FROM borrowings").fetchone()["c"]
+    total_requests = conn.execute("SELECT COUNT(*) c FROM requests").fetchone()["c"]
+    completed_deliveries = conn.execute("SELECT COUNT(*) c FROM requests WHERE status='COMPLETED'").fetchone()["c"]
+    active_borrowings = conn.execute("SELECT COUNT(*) c FROM borrowings WHERE status NOT IN ('COMPLETED','REJECTED','CANCELLED')").fetchone()["c"]
     completed_tasks = conn.execute("SELECT COUNT(*) c FROM tasks WHERE status='COMPLETED'").fetchone()["c"]
-    disputes_open = conn.execute("SELECT COUNT(*) c FROM disputes WHERE status='OPEN'").fetchone()["c"]
-    suspended = conn.execute("SELECT COUNT(*) c FROM users WHERE is_suspended=1").fetchone()["c"]
-    total_value = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions").fetchone()["s"]
-    r1 = st.columns(4); r1[0].metric("Total Users", total_users); r1[1].metric("Verified Users", verified_users); r1[2].metric("Active Requests", active_requests); r1[3].metric("Total Deliveries", deliveries)
-    r2 = st.columns(4); r2[0].metric("Borrowings", borrowings); r2[1].metric("Completed Tasks", completed_tasks); r2[2].metric("Open Disputes", disputes_open); r2[3].metric("Suspended Users", suspended)
-    st.metric("Total Prototype Transaction Value (₹)", f"{total_value:.0f}")
-    st.divider(); tabs = st.tabs(["Users", "Disputes", "Transactions", "Requests"])
+    open_disputes = conn.execute("SELECT COUNT(*) c FROM disputes WHERE status IN ('OPEN','UNDER_REVIEW')").fetchone()["c"]
+    total_value = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE status IN ('RELEASED','COMPLETED','PAID')").fetchone()["s"] or 0
+    total_transactions = conn.execute("SELECT COUNT(*) c FROM transactions").fetchone()["c"]
+    unread_notifications = conn.execute("SELECT COUNT(*) c FROM notifications WHERE is_read=0").fetchone()["c"]
+
+    st.markdown(
+        '<div class="uh-admin-shell"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap">'
+        '<div><div class="uh-admin-eyebrow">UNI HELP · PLATFORM CONTROL</div>'
+        '<div class="uh-admin-title">Admin Control Center</div>'
+        '<p class="uh-admin-subtitle">Monitor students, requests, safety, transactions and platform activity from one place.</p></div>'
+        '<div class="uh-admin-online"><span class="uh-admin-dot"></span> System Online</div></div></div>', unsafe_allow_html=True)
+
+    cols = st.columns(4)
+    with cols[0]: _admin_metric_card("👥", "Students", total_users, f"{active_users} active")
+    with cols[1]: _admin_metric_card("📦", "Open Requests", active_requests, f"{completed_deliveries} deliveries completed")
+    with cols[2]: _admin_metric_card("⚠️", "Needs Attention", open_disputes + suspended, f"{open_disputes} disputes · {suspended} suspended")
+    with cols[3]: _admin_metric_card("💰", "Transaction Value", f"₹{total_value:.0f}", f"{total_transactions} transactions")
+
+    tabs = st.tabs(["Overview", "Users", "Requests", "Disputes", "Transactions", "Announcements", "System"])
+
     with tabs[0]:
-        st.markdown("### Search student by Student ID")
+        st.markdown('<div class="uh-admin-section">Platform health</div>', unsafe_allow_html=True)
+        health_cols = st.columns(4)
+        verification_rate = (verified_users / total_users * 100) if total_users else 0
+        completion_rate = (completed_deliveries / total_requests * 100) if total_requests else 0
+        borrow_rate = min(100, active_borrowings / max(total_users, 1) * 100)
+        task_rate = min(100, completed_tasks / max(total_users, 1) * 100)
+        health_cards = [
+            (health_cols[0], "✅", "Verification", f"{verified_users} of {total_users} students verified", verification_rate),
+            (health_cols[1], "📦", "Delivery completion", f"{completed_deliveries} completed of {total_requests}", completion_rate),
+            (health_cols[2], "🤝", "Active borrowings", f"{active_borrowings} currently active", borrow_rate),
+            (health_cols[3], "⚡", "Micro-tasks", f"{completed_tasks} completed", task_rate),
+        ]
+        for col, icon, title, copy, rate in health_cards:
+            with col:
+                st.markdown(f'<div class="uh-admin-panel"><div class="uh-admin-panel-title">{icon} {title}</div><div class="uh-admin-panel-copy">{copy}</div><div class="uh-admin-statline"><i style="width:{max(0,min(100,rate)):.1f}%"></i></div></div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="uh-admin-section">Needs attention</div>', unsafe_allow_html=True)
+        attention_cols = st.columns(2)
+        with attention_cols[0]:
+            if open_disputes:
+                st.markdown(f'<div class="uh-admin-alert">⚖️ <div><strong>{open_disputes} dispute(s) awaiting review</strong><small>Review evidence and resolve or reject them from Disputes.</small></div></div>', unsafe_allow_html=True)
+            else:
+                st.success("No open disputes require attention.")
+            if suspended:
+                st.markdown(f'<div class="uh-admin-alert">🛡️ <div><strong>{suspended} suspended student account(s)</strong><small>Review profiles if an account needs to be restored.</small></div></div>', unsafe_allow_html=True)
+        with attention_cols[1]:
+            if active_requests:
+                st.markdown(f'<div class="uh-admin-alert">📦 <div><strong>{active_requests} active request(s)</strong><small>Monitor request volume and statuses from Requests.</small></div></div>', unsafe_allow_html=True)
+            if unread_notifications:
+                st.markdown(f'<div class="uh-admin-alert">🔔 <div><strong>{unread_notifications} unread student notification(s)</strong><small>Use Announcements for platform-wide communication.</small></div></div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="uh-admin-section">Recent admin activity</div>', unsafe_allow_html=True)
+        actions = conn.execute("""SELECT a.*, u.full_name AS admin_name FROM admin_actions a
+            JOIN users u ON u.id=a.admin_id ORDER BY a.id DESC LIMIT 8""").fetchall()
+        if actions:
+            for a in actions:
+                action_text = str(a["action"]).replace("_", " ").title()
+                st.markdown(f'<div class="uh-admin-activity"><div class="uh-admin-activity-icon">🛡️</div><div><strong>{action_text}</strong><span>{a["admin_name"]} · {str(a["created_at"])[:19]}</span></div></div>', unsafe_allow_html=True)
+        else:
+            st.info("No admin activity has been recorded yet.")
+
+    with tabs[1]:
+        st.markdown('<div class="uh-admin-search"><h3>🔎 Search student</h3><p>Find an exact student profile using Student ID.</p>', unsafe_allow_html=True)
         search_col, button_col = st.columns([5, 1])
         with search_col:
-            search_id = st.text_input("Enter Student ID", placeholder="Enter Student ID …", label_visibility="collapsed", key="admin_student_search").strip()
+            search_id = st.text_input("Student ID", placeholder="Enter Student ID…", label_visibility="collapsed", key="admin_student_search")
         with button_col:
             search_clicked = st.button("Search", use_container_width=True, type="primary", key="admin_student_search_btn")
+        st.markdown('</div>', unsafe_allow_html=True)
         if search_clicked:
-            if not search_id:
-                st.warning("Enter a Student ID to search."); st.session_state.pop("admin_search_result_id", None)
+            sid_value = search_id.strip()
+            if not sid_value:
+                st.warning("Enter a Student ID to search.")
+                st.session_state.pop("admin_search_result_id", None)
             else:
-                result = conn.execute("SELECT id FROM users WHERE role='student' AND student_id=? LIMIT 1", (search_id,)).fetchone()
-                if result: st.session_state["admin_search_result_id"] = result["id"]
-                else: st.session_state.pop("admin_search_result_id", None); st.warning("No student found with that Student ID.")
+                result = conn.execute("SELECT id FROM users WHERE role='student' AND student_id=? LIMIT 1", (sid_value,)).fetchone()
+                if result:
+                    st.session_state["admin_search_result_id"] = result["id"]
+                else:
+                    st.session_state.pop("admin_search_result_id", None)
+                    st.warning("No student found with that Student ID.")
+
         result_id = st.session_state.get("admin_search_result_id")
         if result_id:
             u = conn.execute("SELECT * FROM users WHERE id=? AND role='student'", (result_id,)).fetchone()
             if u:
                 rating = _admin_student_avg_rating(u)
+                rating_text = f"⭐ {rating:.1f}" if rating else "—"
                 completed_tasks_u = conn.execute("SELECT COUNT(*) c FROM tasks WHERE helper_id=? AND status='COMPLETED'", (u["id"],)).fetchone()["c"]
                 active_borrow_u = conn.execute("SELECT COUNT(*) c FROM borrowings WHERE borrower_id=? AND status NOT IN ('COMPLETED','REJECTED','CANCELLED')", (u["id"],)).fetchone()["c"]
                 completed_delivery_u = conn.execute("SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (u["id"],)).fetchone()["c"]
-                earnings_u = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (u["id"],)).fetchone()["s"]
-                status = "Suspended" if u["is_suspended"] else "Active"; verification = "Verified" if u["verified"] else "Unverified"
-                st.markdown(f'''<div class="uh-admin-search-result"><div class="uh-profile-header"><div class="uh-profile-avatar">{str(u["full_name"] or "S")[0].upper()}</div><div><h3>{u["full_name"]}</h3><div class="uh-profile-sub">Student ID: <strong>{u["student_id"]}</strong></div></div></div><div class="uh-profile-grid"><div><span>Email</span><strong>{u["email"]}</strong></div><div><span>Phone</span><strong>{u["phone"] or '—'}</strong></div><div><span>Verification</span><strong>{verification}</strong></div><div><span>Trust Score</span><strong>{u["trust_score"]}/100</strong></div><div><span>Rating</span><strong>{f'⭐ {rating:.1f}' if rating else '—'}</strong></div><div><span>Tasks Completed</span><strong>{completed_tasks_u}</strong></div><div><span>Active Borrowings</span><strong>{active_borrow_u}</strong></div><div><span>Completed Deliveries</span><strong>{completed_delivery_u}</strong></div><div><span>Earnings</span><strong>₹{earnings_u:.0f}</strong></div><div><span>UniCoins</span><strong>🪙 {u["unicoins"]}</strong></div><div><span>Account Status</span><strong>{status}</strong></div><div><span>Registered</span><strong>{str(u["created_at"])[:10]}</strong></div></div></div>''', unsafe_allow_html=True)
+                earnings_u = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (u["id"],)).fetchone()["s"] or 0
+                status = "Suspended" if u["is_suspended"] else "Active"
+                verification = "Verified" if u["verified"] else "Unverified"
+                name = str(u["full_name"] or "S")
+                html = (
+                    '<div class="uh-admin-search-result"><div class="uh-profile-header">'
+                    f'<div class="uh-profile-avatar">{name[0].upper()}</div><div><h3>{name}</h3>'
+                    f'<div class="uh-profile-sub">Student ID: <strong>{u["student_id"]}</strong></div></div></div>'
+                    '<div class="uh-profile-grid">'
+                    f'<div><span>Email</span><strong>{u["email"]}</strong></div><div><span>Phone</span><strong>{u["phone"] or "—"}</strong></div>'
+                    f'<div><span>Verification</span><strong>{verification}</strong></div><div><span>Trust Score</span><strong>{u["trust_score"]}/100</strong></div>'
+                    f'<div><span>Rating</span><strong>{rating_text}</strong></div><div><span>Tasks Completed</span><strong>{completed_tasks_u}</strong></div>'
+                    f'<div><span>Active Borrowings</span><strong>{active_borrow_u}</strong></div><div><span>Completed Deliveries</span><strong>{completed_delivery_u}</strong></div>'
+                    f'<div><span>Earnings</span><strong>₹{earnings_u:.0f}</strong></div><div><span>UniCoins</span><strong>🪙 {u["unicoins"]}</strong></div>'
+                    f'<div><span>Account Status</span><strong>{status}</strong></div><div><span>Registered</span><strong>{str(u["created_at"])[:10]}</strong></div>'
+                    '</div></div>'
+                )
+                st.markdown(html, unsafe_allow_html=True)
                 if st.button("View Full Profile", key=f"view_profile_{u['id']}", type="primary", use_container_width=True):
-                    st.session_state["admin_profile_user_id"] = u["student_id"]; st.session_state.pop("admin_search_result_id", None); st.rerun()
-        st.markdown("### All students")
+                    st.session_state["admin_profile_user_id"] = u["student_id"]
+                    st.session_state.pop("admin_search_result_id", None)
+                    st.rerun()
+
+        st.markdown('<div class="uh-admin-section">All students</div>', unsafe_allow_html=True)
         users = conn.execute("SELECT * FROM users WHERE role='student' ORDER BY id DESC").fetchall()
+        if not users:
+            st.info("No student accounts found.")
         for u in users:
             with st.container(border=True):
-                cols = st.columns([4, 1, 1, 1])
-                cols[0].write(f"**{u['full_name']}** · Student ID: **{u['student_id'] or '—'}** · {u['email']} — Trust: {u['trust_score']}  {'🟢 Verified' if u['verified'] else '🟡 Unverified'}  {'🔴 Suspended' if u['is_suspended'] else '🟢 Active'}")
-                if cols[1].button("Profile", key=f"profile_list_{u['id']}"):
-                    st.session_state["admin_profile_user_id"] = u["student_id"]; st.rerun()
+                cols = st.columns([4.5, 1.1, 1.2, 1.2])
+                status_text = "🔴 Suspended" if u["is_suspended"] else "🟢 Active"
+                verification_text = "✓ Verified" if u["verified"] else "○ Unverified"
+                cols[0].markdown(f"**{u['full_name']}** · `{u['student_id'] or '—'}`  · {verification_text}  · {status_text}<br><span style='color:#71819a;font-size:.8rem'>{u['email']} · Trust {u['trust_score']}/100</span>", unsafe_allow_html=True)
+                if cols[1].button("Profile", key=f"profile_list_{u['id']}", use_container_width=True):
+                    st.session_state["admin_profile_user_id"] = u["student_id"]
+                    st.rerun()
                 if u["is_suspended"]:
-                    if cols[2].button("Unsuspend", key=f"unsusp_{u['id']}"):
-                        conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (u["id"],)); conn.commit(); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "UNSUSPEND_USER", u["id"], "", now_iso())); conn.commit(); st.rerun()
+                    if cols[2].button("Unsuspend", key=f"unsusp_{u['id']}", use_container_width=True):
+                        conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (u["id"],))
+                        conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "UNSUSPEND_USER", u["id"], "", now_iso()))
+                        conn.commit(); st.rerun()
                 else:
-                    if cols[2].button("Suspend", key=f"susp_{u['id']}"):
-                        conn.execute("UPDATE users SET is_suspended=1 WHERE id=?", (u["id"],)); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "SUSPEND_USER", u["id"], "", now_iso())); conn.commit(); st.rerun()
-    with tabs[1]:
-        disputes = conn.execute("SELECT d.*, u.full_name reporter_name FROM disputes d JOIN users u ON u.id=d.reporter_id ORDER BY d.id DESC").fetchall()
+                    if cols[2].button("Suspend", key=f"susp_{u['id']}", use_container_width=True):
+                        conn.execute("UPDATE users SET is_suspended=1 WHERE id=?", (u["id"],))
+                        conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "SUSPEND_USER", u["id"], "", now_iso()))
+                        conn.commit(); st.rerun()
+
+    with tabs[2]:
+        st.markdown('<div class="uh-admin-section">Request operations</div>', unsafe_allow_html=True)
+        req_filter = st.selectbox("Filter", ["ALL", "CREATED", "ACCEPTED", "IN_TRANSIT", "DELIVERED", "COMPLETED", "CANCELLED", "DISPUTED"], key="admin_req_filter")
+        query = "SELECT r.*, ru.full_name requester_name, hu.full_name helper_name FROM requests r JOIN users ru ON ru.id=r.requester_id LEFT JOIN users hu ON hu.id=r.helper_id"
+        params = ()
+        if req_filter != "ALL": query += " WHERE r.status=?"; params = (req_filter,)
+        query += " ORDER BY r.id DESC LIMIT 100"
+        reqs = conn.execute(query, params).fetchall()
+        if not reqs: st.info("No requests match this filter.")
+        for r in reqs:
+            with st.container(border=True):
+                c1,c2,c3 = st.columns([4,2,1.2])
+                c1.markdown(f"**#{r['id']} · {r['item_name']}**<br><span style='color:#71819a;font-size:.72rem'>{r['requester_name']} → {r['helper_name'] or 'Unassigned'}</span>", unsafe_allow_html=True)
+                c2.markdown(status_badge(r["status"]), unsafe_allow_html=True)
+                c3.write(f"₹{r['reward']:.0f}")
+
+    with tabs[3]:
+        st.markdown('<div class="uh-admin-section">Safety & dispute review</div>', unsafe_allow_html=True)
+        dispute_filter = st.selectbox("Status", ["ALL", "OPEN", "UNDER_REVIEW", "RESOLVED", "REJECTED"], key="admin_dispute_filter")
+        q = "SELECT d.*, u.full_name reporter_name FROM disputes d JOIN users u ON u.id=d.reporter_id"
+        pms = ()
+        if dispute_filter != "ALL": q += " WHERE d.status=?"; pms=(dispute_filter,)
+        q += " ORDER BY d.id DESC"
+        disputes = conn.execute(q,pms).fetchall()
+        if not disputes: st.success("No disputes match this filter.")
         for d in disputes:
             with st.container(border=True):
-                st.markdown(f"**{d['category']}** — {d['transaction_type']} #{d['transaction_id']} reported by {d['reporter_name']}  {status_badge(d['status'])}", unsafe_allow_html=True); st.write(d["description"] or "")
-                if d["evidence_path"] and os.path.exists(d["evidence_path"]): st.image(d["evidence_path"], width=200)
+                st.markdown(f"**{d['category']}** · {d['transaction_type']} #{d['transaction_id']} · {d['reporter_name']} {status_badge(d['status'])}", unsafe_allow_html=True)
+                st.write(d["description"] or "No description provided.")
+                if d["evidence_path"] and os.path.exists(d["evidence_path"]): st.image(d["evidence_path"], width=240)
                 if d["status"] in ("OPEN", "UNDER_REVIEW"):
                     c1,c2,c3=st.columns(3)
-                    if c1.button("Mark Under Review", key=f"dur_{d['id']}"): conn.execute("UPDATE disputes SET status='UNDER_REVIEW' WHERE id=?", (d["id"],)); conn.commit(); st.rerun()
-                    if c2.button("Resolve", key=f"dres_{d['id']}"): conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE id=?", (now_iso(), d["id"])); conn.commit(); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "RESOLVE_DISPUTE", d["id"], "", now_iso())); conn.commit(); st.rerun()
-                    if c3.button("Reject", key=f"drej_{d['id']}"): conn.execute("UPDATE disputes SET status='REJECTED', resolved_at=? WHERE id=?", (now_iso(), d["id"])); conn.commit(); st.rerun()
-    with tabs[2]:
-        txs=conn.execute("SELECT * FROM transactions ORDER BY id DESC LIMIT 100").fetchall()
-        for tx in txs: st.markdown(f"#{tx['id']} — ₹{tx['amount']:.0f} — {tx['related_type']} #{tx['related_id']}  {status_badge(tx['status'])}", unsafe_allow_html=True)
-    with tabs[3]:
-        reqs=conn.execute("SELECT * FROM requests ORDER BY id DESC LIMIT 100").fetchall()
-        for r in reqs: st.markdown(f"#{r['id']} {r['item_name']}  {status_badge(r['status'])}", unsafe_allow_html=True)
+                    if c1.button("Mark Under Review", key=f"dur_{d['id']}"):
+                        conn.execute("UPDATE disputes SET status='UNDER_REVIEW' WHERE id=?", (d["id"],)); conn.commit(); st.rerun()
+                    if c2.button("Resolve", key=f"dres_{d['id']}"):
+                        conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE id=?", (now_iso(), d["id"])); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "RESOLVE_DISPUTE", d["id"], "", now_iso())); conn.commit(); st.rerun()
+                    if c3.button("Reject", key=f"drej_{d['id']}"):
+                        conn.execute("UPDATE disputes SET status='REJECTED', resolved_at=? WHERE id=?", (now_iso(), d["id"])); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "REJECT_DISPUTE", d["id"], "", now_iso())); conn.commit(); st.rerun()
+
+    with tabs[4]:
+        st.markdown('<div class="uh-admin-section">Transaction monitoring</div>', unsafe_allow_html=True)
+        tx_filter = st.selectbox("Transaction status", ["ALL", "PENDING", "RELEASED", "COMPLETED", "PAID", "CANCELLED", "DISPUTED"], key="admin_tx_filter")
+        tq = "SELECT * FROM transactions"; tp = ()
+        if tx_filter != "ALL": tq += " WHERE status=?"; tp=(tx_filter,)
+        tq += " ORDER BY id DESC LIMIT 100"
+        txs = conn.execute(tq,tp).fetchall()
+        if not txs: st.info("No transactions match this filter.")
+        for tx in txs:
+            with st.container(border=True):
+                c1,c2,c3=st.columns([4,2,1.3])
+                c1.write(f"**#{tx['id']}** · {tx['related_type']} #{tx['related_id']}")
+                c2.markdown(status_badge(tx["status"]), unsafe_allow_html=True)
+                c3.write(f"₹{tx['amount']:.0f}")
+
+    with tabs[5]:
+        st.markdown('<div class="uh-admin-section">Campus announcements</div>', unsafe_allow_html=True)
+        st.markdown('<div class="uh-admin-panel"><div class="uh-admin-panel-title">📣 Send a platform announcement</div><div class="uh-admin-panel-copy">Uses the existing notifications system. No new database tables are created.</div></div>', unsafe_allow_html=True)
+        audience = st.selectbox("Audience", ["All active students", "All verified students", "All students"], key="admin_announcement_audience")
+        message = st.text_area("Announcement", placeholder="Example: UNI HELP maintenance will take place tonight at 11 PM.", max_chars=500, key="admin_announcement_message")
+        if st.button("Send Announcement", type="primary", use_container_width=True, key="admin_send_announcement"):
+            clean = message.strip()
+            if not clean:
+                st.warning("Enter an announcement first.")
+            else:
+                if audience == "All active students":
+                    recipients = conn.execute("SELECT id FROM users WHERE role='student' AND is_suspended=0").fetchall()
+                elif audience == "All verified students":
+                    recipients = conn.execute("SELECT id FROM users WHERE role='student' AND verified=1 AND is_suspended=0").fetchall()
+                else:
+                    recipients = conn.execute("SELECT id FROM users WHERE role='student'").fetchall()
+                now = now_iso()
+                conn.executemany("INSERT INTO notifications (user_id, message, is_read, created_at) VALUES (?,?,0,?)", [(r["id"], clean, now) for r in recipients])
+                conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "BROADCAST_ANNOUNCEMENT", None, f"audience={audience}; recipients={len(recipients)}", now))
+                conn.commit()
+                st.success(f"Announcement sent to {len(recipients)} student(s).")
+
+    with tabs[6]:
+        st.markdown('<div class="uh-admin-section">Platform diagnostics</div>', unsafe_allow_html=True)
+        checks = [
+            ("SQLite database", os.path.exists(DB_PATH), DB_PATH),
+            ("Email SMTP", EMAIL_CONFIGURED, "Configured" if EMAIL_CONFIGURED else "Not configured"),
+            ("QR storage", os.path.isdir(QR_DIR), QR_DIR),
+            ("Profile photo storage", os.path.isdir(PHOTOS_DIR), PHOTOS_DIR),
+        ]
+        for label, ok, detail in checks:
+            icon = "🟢" if ok else "🟠"
+            text = "READY" if ok else "CHECK CONFIG"
+            fg = "#047857" if ok else "#c2410c"
+            st.markdown(f'<div class="uh-admin-panel" style="margin-bottom:.5rem;display:flex;justify-content:space-between;align-items:center"><div><div class="uh-admin-panel-title">{icon} {label}</div><div class="uh-admin-panel-copy">{detail}</div></div><strong style="color:{fg};font-size:.68rem">{text}</strong></div>', unsafe_allow_html=True)
+        st.markdown('<div class="uh-admin-section">Database record counts</div>', unsafe_allow_html=True)
+        table_counts = []
+        for table in ["users","requests","items","borrowings","tasks","transactions","ratings","notifications","disputes","unicoin_transactions","locations","admin_actions"]:
+            try:
+                count = conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+            except sqlite3.Error:
+                count = "Unavailable"
+            table_counts.append((table, count))
+        st.dataframe({"Table": [x[0] for x in table_counts], "Records": [x[1] for x in table_counts]}, use_container_width=True, hide_index=True)
+
     conn.close()
 
 
@@ -2420,13 +2678,20 @@ def render_profile(user):
 
 
 def render_student_topbar(user):
-    top_left, top_right = st.columns([5, 1])
-    with top_left:
-        current = st.session_state.get("nav", "Dashboard")
-        st.markdown(f"<div class='uh-app-context'><span>🎓 UNI HELP</span><small>{current}</small></div>", unsafe_allow_html=True)
-    with top_right:
-        if st.button("⌂ Dashboard", key="top_dashboard", use_container_width=True):
-            st.session_state["nav"] = "Dashboard"; st.rerun()
+    """Compact app header for students; desktop sidebar is intentionally replaced by mobile navigation."""
+    unread = get_notifications(user['id'], unread_only=True, limit=1)
+    current = st.session_state.get('nav', 'Dashboard')
+    title_map = {'Dashboard':'Home', 'Micro-Tasks':'Tasks', 'Leaders':'Leaders', 'Profile':'Profile', 'Delivery':'Delivery', 'Borrowing':'Borrowing', 'Wallet':'Wallet'}
+    title = title_map.get(current, current)
+    st.markdown("<div class='uh-student-shell'></div>", unsafe_allow_html=True)
+    st.markdown(f"""<div class='uh-app-header'><div><div class='uh-app-header-brand'>🎓 UNI HELP</div><div class='uh-app-header-title'>{title}</div></div><div class='uh-app-header-user'>Hi, {str(user['full_name']).split()[0]}</div></div>""", unsafe_allow_html=True)
+    h1, h2 = st.columns([5,1])
+    with h2:
+        st.markdown("<div class='uh-header-icon'>", unsafe_allow_html=True)
+        if st.button(f"🔔{(' ' + str(len(unread))) if unread else ''}", key='student_notifications', use_container_width=True):
+            st.session_state['nav']='Notifications'; st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
 
 def render_sidebar(user):
     if user["role"] == "admin":
@@ -2439,32 +2704,28 @@ def render_sidebar(user):
             st.session_state["auth_mode"] = "Home"
             st.rerun()
         return
+    # Student navigation is rendered as a fixed mobile app bar below the page.
+    return
 
-    st.sidebar.markdown("### 🎓 UNI HELP")
-    st.sidebar.write(f"**{user['full_name']}**")
-    st.sidebar.caption(user["email"])
-    if not user["verified"]:
-        st.sidebar.warning("Email not verified")
 
-    options = ["Delivery", "Borrowing", "Micro-Tasks", "Wallet", "Profile"]
-    current_clean = st.session_state.get("nav", "Dashboard")
-    st.sidebar.markdown("<div class='uh-side-label'>NAVIGATE</div>", unsafe_allow_html=True)
-    if current_clean in options:
-        choice = st.sidebar.radio("Navigate", options, index=options.index(current_clean), label_visibility="collapsed")
-        st.session_state["nav"] = choice
-    else:
-        st.sidebar.markdown("<div class='uh-side-current'>⌂ Dashboard</div>", unsafe_allow_html=True)
-    st.sidebar.divider()
-    if not user["verified"]:
-        if st.sidebar.button("📧 Verify Email"):
-            st.session_state["pending_verify_email"] = user["email"]
-            st.session_state["user"] = None
-            st.session_state["auth_mode"] = "Verify"
-            st.rerun()
-    if st.sidebar.button("🚪 Logout"):
-        st.session_state["user"] = None
-        st.session_state["auth_mode"] = "Home"
-        st.rerun()
+def render_student_bottom_nav(user):
+    current = st.session_state.get('nav', 'Dashboard')
+    with st.container(key='uh_bottom_nav'):
+        cols = st.columns(5)
+        navs = [('⌂', 'Home', 'Dashboard'), ('☷', 'Tasks', 'Micro-Tasks'), ('＋', '', 'CREATE'), ('♕', 'Leaders', 'Leaders'), ('♙', 'Profile', 'Profile')]
+        for col, (icon, label, target) in zip(cols, navs):
+            with col:
+                if target == 'CREATE':
+                    st.markdown("<div class='uh-nav-plus'>", unsafe_allow_html=True)
+                    if st.button(icon, key='bottom_create', use_container_width=True):
+                        st.session_state['nav'] = 'Delivery'; st.rerun()
+                    st.markdown("</div>", unsafe_allow_html=True)
+                else:
+                    cls = 'uh-nav-active' if current == target else ''
+                    st.markdown(f"<div class='{cls}'>", unsafe_allow_html=True)
+                    if st.button(f"{icon}\n{label}", key=f'bottom_{target}', use_container_width=True):
+                        st.session_state['nav'] = target; st.rerun()
+                    st.markdown("</div>", unsafe_allow_html=True)
 
 def main():
     user = st.session_state.get("user")
@@ -2506,8 +2767,8 @@ def main():
         render_wallet(user)
     elif nav == "Profile":
         render_profile(user)
-    elif nav == "Notifications":
-        render_notifications(user)
+    elif nav == "Leaders":
+        render_leaders(user)
     elif nav == "Disputes":
         render_disputes(user)
     elif nav == "Admin":
@@ -2515,6 +2776,10 @@ def main():
     else:
         render_dashboard(user)
 
+    if user["role"] != "admin":
+        render_student_bottom_nav(user)
+
 
 if __name__ == "__main__":
     main()
+  
