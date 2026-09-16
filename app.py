@@ -284,7 +284,7 @@ def init_db():
     if "admin_otp_bypass" not in task_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN admin_otp_bypass INTEGER NOT NULL DEFAULT 0")
     # Populate short unique IDs for existing tasks.
-    rows = conn.execute("SELECT id FROM tasks WHERE task_code IS NULL OR task_code =  ORDER BY id").fetchall()
+    rows = conn.execute("SELECT id FROM tasks WHERE task_code IS NULL OR task_code = '' ORDER BY id").fetchall()
     for row in rows:
         conn.execute("UPDATE tasks SET task_code=? WHERE id=?", (f"UNIH{row[0]:04d}", row[0]))
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_task_code ON tasks(task_code)")
@@ -2033,7 +2033,7 @@ def render_admin(user):
 # 7. MAIN ROUTER
 # =============================================================================
 
-def render_sidebar(user):
+def render_sidebar(user, active_task=None):
     st.sidebar.markdown("### 🎓 UNI HELP")
     st.sidebar.write(f"**{user['full_name']}**")
     st.sidebar.caption(user["email"])
@@ -2041,18 +2041,25 @@ def render_sidebar(user):
         st.sidebar.warning("Email not verified")
 
     unread = len(get_notifications(user["id"], unread_only=True))
-    options = ["Dashboard", "Delivery", "Borrowing", "Micro-Tasks",
-               f"Notifications ({unread})" if unread else "Notifications",
-               "Wallet", "Disputes"]
-    if user["role"] == "admin":
-        options.append("Admin")
+    if active_task and user["role"] != "admin":
+        options = ["🔒 Active Task"]
+    else:
+        options = ["Dashboard", "Delivery", "Borrowing", "Micro-Tasks",
+                   f"Notifications ({unread})" if unread else "Notifications",
+                   "Wallet", "Disputes"]
+        if user["role"] == "admin":
+            options.append("Admin")
 
-    clean_map = {opt: opt.split(" (")[0] for opt in options}
+    clean_map = {opt: ("Micro-Tasks" if opt == "🔒 Active Task" else opt.split(" (")[0]) for opt in options}
     current_clean = st.session_state.get("nav", "Dashboard")
     display_current = next((o for o in options if clean_map[o] == current_clean), options[0])
 
     choice = st.sidebar.radio("Navigate", options, index=options.index(display_current))
     st.session_state["nav"] = clean_map[choice]
+
+    if active_task and user["role"] != "admin":
+        st.sidebar.info(f"🔒 Active task: {active_task['task_code'] or task_code(active_task['id'])}")
+        st.sidebar.caption("Finish your active task before using other app features.")
 
     st.sidebar.divider()
     if not user["verified"]:
@@ -2085,13 +2092,12 @@ def main():
     refresh_current_user()
     user = st.session_state["user"]
     # If this student accepted a task, lock navigation to the active task until completion.
-    if user["role"] != "admin":
-        active_lock = get_active_helper_task(user["id"])
-        if active_lock:
-            st.session_state["nav"] = "Micro-Tasks"
-    render_sidebar(user)
+    active_lock = None if user["role"] == "admin" else get_active_helper_task(user["id"])
+    if active_lock:
+        st.session_state["nav"] = "Micro-Tasks"
+    render_sidebar(user, active_task=active_lock)
 
-    nav = st.session_state.get("nav", "Dashboard")
+    nav = "Micro-Tasks" if active_lock else st.session_state.get("nav", "Dashboard")
     if nav == "Dashboard":
         render_dashboard(user)
     elif nav == "Delivery":
