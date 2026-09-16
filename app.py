@@ -301,9 +301,17 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_r
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-    if "profile_photo_path" not in columns:
+    user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "profile_photo_path" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN profile_photo_path TEXT")
+
+    # Backward-compatible migration for existing UNI HELP databases.
+    # Older databases did not have tasks.accepted_at; adding it lets us keep
+    # the active-task experience without replacing or resetting existing data.
+    task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    if "accepted_at" not in task_columns:
+        conn.execute("ALTER TABLE tasks ADD COLUMN accepted_at TEXT")
+
     conn.commit()
     # Create a default admin account if none exists (demo convenience only).
     cur = conn.execute("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
@@ -1705,6 +1713,12 @@ def render_dashboard(user):
            WHERE r.requester_id != ? AND r.status='CREATED'
            ORDER BY r.id DESC LIMIT 3""", (user["id"],)
     ).fetchall()
+    nearby_borrow = conn.execute(
+        """SELECT i.*, u.full_name owner_name FROM items i
+           JOIN users u ON u.id=i.owner_id
+           WHERE i.owner_id != ? AND i.status='AVAILABLE'
+           ORDER BY i.id DESC LIMIT 3""", (user["id"],)
+    ).fetchall()
     unread = conn.execute("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0", (user["id"],)).fetchone()["c"]
     conn.close()
 
@@ -1753,6 +1767,23 @@ def render_dashboard(user):
                 <div class='uh-request-status'>{'URGENT' if urgent else 'OPEN'}</div></div>
                 <div class='uh-request-meta'>⌖ Reward ₹{float(r['reward']):.0f} · {str(r['destination'] or 'Campus')}</div>
             </div>""", unsafe_allow_html=True)
+
+    if nearby_borrow:
+        st.markdown("<div class='uh-nearby-head' style='margin-top:1.1rem'><h2>Available to borrow</h2></div>", unsafe_allow_html=True)
+        for it in nearby_borrow:
+            item_name = str(it['item_name'] or 'Item').replace('<','&lt;').replace('>','&gt;')
+            owner_name = str(it['owner_name'] or 'Student').replace('<','&lt;').replace('>','&gt;')
+            initial = owner_name[0].upper() if owner_name else 'S'
+            st.markdown(f"""<div class='uh-request-card'>
+                <div class='uh-request-top'><div class='uh-request-avatar'>{initial}</div><div class='uh-request-main'>
+                <strong>🤝 {item_name}</strong><span>{owner_name} • {str(it['category'] or 'Other')}</span></div>
+                <div class='uh-request-status' style='color:#a45612'>AVAILABLE</div></div>
+                <div class='uh-request-meta'>💰 Deposit ₹{float(it['deposit']):.0f} · {str(it['condition'] or 'Condition not specified')}</div>
+            </div>""", unsafe_allow_html=True)
+            if st.button("🤝 Request to Borrow", key=f"home_borrow_{it['id']}", use_container_width=True):
+                st.session_state['nav'] = 'Borrowing'
+                st.session_state['borrow_focus_item'] = int(it['id'])
+                st.rerun()
 
     st.markdown("<div class='uh-refresh'>↻ &nbsp;Live campus requests</div>", unsafe_allow_html=True)
 
@@ -2350,31 +2381,118 @@ def render_microtasks(user):
                     st.rerun()
 
     with tabs[1]:
+        # A helper may work on only ONE micro-task at a time. Once a task is
+        # accepted, do not expose any other tasks until that task is completed.
         conn = get_conn()
-        open_tasks = conn.execute(
+        active_task = conn.execute(
             "SELECT t.*, u.full_name creator_name FROM tasks t JOIN users u ON u.id=t.creator_id "
-            "WHERE t.status='CREATED' AND t.creator_id != ? ORDER BY t.id DESC", (user["id"],)
-        ).fetchall()
+            "WHERE t.helper_id=? AND t.status IN ('ACCEPTED','IN_PROGRESS') "
+            "ORDER BY t.accepted_at DESC, t.id DESC LIMIT 1",
+            (user["id"],),
+        ).fetchone()
         conn.close()
-        if not open_tasks:
-            st.caption("No open tasks right now.")
-        for t in open_tasks:
+
+        if active_task:
+            st.markdown("### 🔒 Your current task")
+            st.info("You already accepted a task. Finish it before accepting another one.")
             with st.container(border=True):
-                st.markdown(f"**{t['title']}** ({t['category']}) — by {t['creator_name']}  {status_badge(t['status'])}", unsafe_allow_html=True)
-                st.write(t["description"] or "")
-                st.write(f"💰 ₹{t['reward']:.0f}  |  ⏰ {t['deadline'] or 'Flexible'}")
-                if st.button("✅ Accept Task", key=f"tacc_{t['id']}"):
-                    conn = get_conn()
-                    check = conn.execute("SELECT status FROM tasks WHERE id=?", (t["id"],)).fetchone()
-                    if check["status"] != "CREATED":
-                        st.error("This task is no longer available.")
-                    else:
-                        conn.execute("UPDATE tasks SET helper_id=?, status='ACCEPTED' WHERE id=?", (user["id"], t["id"]))
+                st.markdown(
+                    f"**{active_task['title']}** ({active_task['category']}) — "
+                    f"by {active_task['creator_name']}  {status_badge(active_task['status'])}",
+                    unsafe_allow_html=True,
+                )
+                st.write(active_task["description"] or "")
+                st.write(f"💰 ₹{active_task['reward']:.0f}  |  ⏰ {active_task['deadline'] or 'Flexible'}")
+                if active_task["status"] == "ACCEPTED":
+                    if st.button("▶ Start Task", key=f"tbrowse_start_{active_task['id']}"):
+                        conn = get_conn()
+                        conn.execute(
+                            "UPDATE tasks SET status='IN_PROGRESS' WHERE id=? AND helper_id=? AND status='ACCEPTED'",
+                            (active_task["id"], user["id"]),
+                        )
                         conn.commit()
-                        create_transaction(t["creator_id"], user["id"], "TASK", t["id"], t["reward"], "HELD")
                         conn.close()
-                        notify(t["creator_id"], f"{user['full_name']} accepted your task: {t['title']}.")
                         st.rerun()
+                elif active_task["status"] == "IN_PROGRESS":
+                    completion_code = st.text_input(
+                        "Enter completion code from task creator",
+                        key=f"tbrowse_comp_{active_task['id']}",
+                        max_chars=6,
+                    )
+                    if st.button("Verify & Complete", key=f"tbrowse_compbtn_{active_task['id']}"):
+                        ok, msg = verify_otp(
+                            active_task["creator_id"],
+                            "DELIVERY_COMPLETION",
+                            active_task["id"],
+                            completion_code,
+                        )
+                        if ok:
+                            conn = get_conn()
+                            conn.execute(
+                                "UPDATE tasks SET status='COMPLETED', completed_at=? WHERE id=? AND helper_id=?",
+                                (now_iso(), active_task["id"], user["id"]),
+                            )
+                            conn.commit()
+                            conn.close()
+                            update_transaction_status("TASK", active_task["id"], "RELEASED")
+                            add_unicoins(user["id"], 15, "Micro-task completed")
+                            recalc_trust_score(user["id"])
+                            notify(
+                                active_task["creator_id"],
+                                f"Your task '{active_task['title']}' was completed and verified.",
+                            )
+                            st.success("Task completed! You can now accept another task.")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+        else:
+            open_tasks_conn = get_conn()
+            open_tasks = open_tasks_conn.execute(
+                "SELECT t.*, u.full_name creator_name FROM tasks t JOIN users u ON u.id=t.creator_id "
+                "WHERE t.status='CREATED' AND t.creator_id != ? ORDER BY t.id DESC",
+                (user["id"],),
+            ).fetchall()
+            open_tasks_conn.close()
+
+            if not open_tasks:
+                st.caption("No open tasks right now.")
+            else:
+                st.caption("Accept one task. Other tasks will be hidden until you finish it.")
+
+            for t in open_tasks:
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{t['title']}** ({t['category']}) — by {t['creator_name']}  "
+                        f"{status_badge(t['status'])}",
+                        unsafe_allow_html=True,
+                    )
+                    st.write(t["description"] or "")
+                    st.write(f"💰 ₹{t['reward']:.0f}  |  ⏰ {t['deadline'] or 'Flexible'}")
+                    if st.button("✅ Accept Task", key=f"tacc_{t['id']}"):
+                        conn = get_conn()
+                        # Re-check the one-active-task rule at acceptance time so
+                        # a second task cannot be accepted after a rerun/race.
+                        active_check = conn.execute(
+                            "SELECT id FROM tasks WHERE helper_id=? AND status IN ('ACCEPTED','IN_PROGRESS') LIMIT 1",
+                            (user["id"],),
+                        ).fetchone()
+                        check = conn.execute("SELECT status FROM tasks WHERE id=?", (t["id"],)).fetchone()
+                        if active_check:
+                            conn.close()
+                            st.warning("You already have an active task. Finish it before accepting another one.")
+                        elif not check or check["status"] != "CREATED":
+                            conn.close()
+                            st.error("This task is no longer available.")
+                        else:
+                            conn.execute(
+                                "UPDATE tasks SET helper_id=?, status='ACCEPTED', accepted_at=? WHERE id=? AND status='CREATED'",
+                                (user["id"], now_iso(), t["id"]),
+                            )
+                            conn.commit()
+                            create_transaction(t["creator_id"], user["id"], "TASK", t["id"], t["reward"], "HELD")
+                            conn.close()
+                            notify(t["creator_id"], f"{user['full_name']} accepted your task: {t['title']}.")
+                            st.rerun()
 
     with tabs[2]:
         conn = get_conn()
