@@ -698,7 +698,15 @@ def normalize_phone(phone):
     return ""
 
 
-def is_valid_phone(phone): return bool(normalize_phone(phone))
+def is_valid_phone(phone):
+    """Registration accepts a plain 10-digit Indian mobile number; country code is added internally for providers."""
+    raw = str(phone or "").strip()
+    return bool(re.fullmatch(r"\d{10}", raw))
+
+
+def is_valid_student_id(student_id):
+    """UNI HELP student IDs are exactly 8 digits and start with the common 126 prefix."""
+    return bool(re.fullmatch(r"126\d{5}", str(student_id or "").strip()))
 
 
 def _twilio_verify_client():
@@ -768,8 +776,8 @@ def register_user(full_name,email,phone,student_id,password):
     email=email.strip().lower(); phone=normalize_phone(phone); student_id=student_id.strip()
     if not full_name.strip(): return False,"Full name is required."
     if not is_valid_email(email): return False,"Please enter a valid email address."
-    if not phone: return False,"Please enter a valid phone number with country code."
-    if not student_id: return False,"Student ID is required."
+    if not phone: return False,"Please enter a valid 10-digit mobile number."
+    if not is_valid_student_id(student_id): return False,"Student ID must be exactly 8 digits and start with 126."
     if len(password)<6: return False,"Password must be at least 6 characters."
     if user_by_email(email): return False,"An account with this email already exists."
     conn=get_conn()
@@ -1098,7 +1106,7 @@ def render_landing():
     with st.container(border=True):
         _auth_tabs("login")
         st.markdown('<div class="uh-auth-card-title">Welcome back</div><div class="uh-auth-card-copy">Sign in with your Student ID, password and registered email.</div>', unsafe_allow_html=True)
-        sid = st.text_input("Student ID", placeholder="Enter your Student ID", key="auth_student_id")
+        sid = st.text_input("Student ID", placeholder="126xxxxx", max_chars=8, key="auth_student_id")
         pw = st.text_input("Password", type="password", placeholder="Enter your password", key="auth_student_password")
         if st.button("Send OTP", use_container_width=True, type="primary", key="auth_send_email"):
             with st.spinner("Sending secure OTP…"):
@@ -1163,8 +1171,8 @@ def render_register():
             with st.form("register_form"):
                 full_name = st.text_input("Full Name", placeholder="Your full name")
                 email = st.text_input("Email Address", placeholder="you@example.com")
-                student_id = st.text_input("Student ID", placeholder="Your Student ID")
-                phone = st.text_input("Phone Number", placeholder="+91 9876543210")
+                student_id = st.text_input("Student ID", placeholder="126xxxxx", max_chars=8)
+                phone = st.text_input("Phone Number", placeholder="9876543210", max_chars=10)
                 password = st.text_input("Password", type="password", placeholder="At least 6 characters")
                 password2 = st.text_input("Confirm Password", type="password", placeholder="Repeat your password")
                 submitted = st.form_submit_button("Create Account & Send Email OTP", use_container_width=True, type="primary")
@@ -1173,8 +1181,10 @@ def render_register():
                     st.error("Passwords do not match.")
                 elif not is_valid_email(email):
                     st.error("Please enter a valid email address.")
+                elif not is_valid_student_id(student_id):
+                    st.error("Student ID must be exactly 8 digits and start with 126.")
                 elif not is_valid_phone(phone):
-                    st.error("Please enter a valid phone number with country code.")
+                    st.error("Please enter a valid 10-digit mobile number.")
                 elif not EMAIL_CONFIGURED:
                     st.error("Email verification is not configured. Please contact the administrator.")
                 else:
