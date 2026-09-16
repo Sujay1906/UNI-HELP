@@ -2805,26 +2805,109 @@ def render_admin(user):
                 c3.write(f"₹{tx['amount']:.0f}")
 
     with tabs[5]:
-        st.markdown('<div class="uh-admin-section">Campus announcements</div>', unsafe_allow_html=True)
-        st.markdown('<div class="uh-admin-panel"><div class="uh-admin-panel-title">📣 Send a platform announcement</div><div class="uh-admin-panel-copy">Uses the existing notifications system. No new database tables are created.</div></div>', unsafe_allow_html=True)
-        audience = st.selectbox("Audience", ["All active students", "All verified students", "All students"], key="admin_announcement_audience")
-        message = st.text_area("Announcement", placeholder="Example: UNI HELP maintenance will take place tonight at 11 PM.", max_chars=500, key="admin_announcement_message")
-        if st.button("Send Announcement", type="primary", use_container_width=True, key="admin_send_announcement"):
+        st.markdown('<div class="uh-admin-section">📣 Broadcast Center</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="uh-admin-panel">'
+            '<div class="uh-admin-panel-title">📣 Message all students</div>'
+            '<div class="uh-admin-panel-copy">Send one announcement through UNI HELP notifications, email, or both. Uses the existing users, notifications and SMTP systems — no new database tables.</div>'
+            '</div>', unsafe_allow_html=True
+        )
+
+        audience = st.selectbox(
+            "Audience",
+            ["All active students", "All verified students", "All students"],
+            key="admin_announcement_audience"
+        )
+
+        delivery_cols = st.columns(2)
+        with delivery_cols[0]:
+            send_in_app = st.checkbox("🔔 UNI HELP notification", value=True, key="admin_send_in_app")
+        with delivery_cols[1]:
+            send_email_broadcast = st.checkbox("✉️ Email", value=True, key="admin_send_email")
+
+        email_subject = st.text_input(
+            "Email subject",
+            value="UNI HELP Announcement",
+            max_chars=120,
+            key="admin_announcement_subject",
+            disabled=not send_email_broadcast,
+            help="Used only when Email is selected."
+        )
+        message = st.text_area(
+            "Announcement message",
+            placeholder="Example: UNI HELP maintenance will take place tonight at 11 PM.",
+            max_chars=1000,
+            key="admin_announcement_message",
+            height=140
+        )
+
+        if send_email_broadcast and not EMAIL_CONFIGURED:
+            st.warning("✉️ Email delivery is not configured. Add the existing SMTP secrets to enable broadcast emails. UNI HELP notifications can still be sent.")
+
+        if st.button("🚀 Send Broadcast", type="primary", use_container_width=True, key="admin_send_announcement"):
             clean = message.strip()
+            subject = email_subject.strip()
+
             if not clean:
-                st.warning("Enter an announcement first.")
+                st.warning("Enter an announcement message first.")
+            elif not send_in_app and not send_email_broadcast:
+                st.warning("Select at least one delivery method.")
+            elif send_email_broadcast and not subject:
+                st.warning("Enter an email subject.")
             else:
                 if audience == "All active students":
-                    recipients = conn.execute("SELECT id FROM users WHERE role='student' AND is_suspended=0").fetchall()
+                    recipients = conn.execute("SELECT id, full_name, email FROM users WHERE role='student' AND is_suspended=0").fetchall()
                 elif audience == "All verified students":
-                    recipients = conn.execute("SELECT id FROM users WHERE role='student' AND verified=1 AND is_suspended=0").fetchall()
+                    recipients = conn.execute("SELECT id, full_name, email FROM users WHERE role='student' AND verified=1 AND is_suspended=0").fetchall()
                 else:
-                    recipients = conn.execute("SELECT id FROM users WHERE role='student'").fetchall()
+                    recipients = conn.execute("SELECT id, full_name, email FROM users WHERE role='student'").fetchall()
+
                 now = now_iso()
-                conn.executemany("INSERT INTO notifications (user_id, message, is_read, created_at) VALUES (?,?,0,?)", [(r["id"], clean, now) for r in recipients])
-                conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "BROADCAST_ANNOUNCEMENT", None, f"audience={audience}; recipients={len(recipients)}", now))
+                notification_count = 0
+                email_success = 0
+                email_failed = 0
+
+                if send_in_app and recipients:
+                    conn.executemany(
+                        "INSERT INTO notifications (user_id, message, is_read, created_at) VALUES (?,?,0,?)",
+                        [(r["id"], clean, now) for r in recipients]
+                    )
+                    notification_count = len(recipients)
+
+                # Email each recipient using the already-configured SMTP helper.
+                # No credentials or message secrets are written to the database.
+                if send_email_broadcast and EMAIL_CONFIGURED:
+                    for recipient in recipients:
+                        email = (recipient["email"] or "").strip()
+                        if not email:
+                            email_failed += 1
+                            continue
+                        email_body = f"Hi {recipient['full_name'] or 'there'},\n\n{clean}\n\n- UNI HELP"
+                        if send_email(email, subject, email_body):
+                            email_success += 1
+                        else:
+                            email_failed += 1
+
+                details = (
+                    f"audience={audience}; recipients={len(recipients)}; "
+                    f"in_app={notification_count}; email_sent={email_success}; email_failed={email_failed}"
+                )
+                conn.execute(
+                    "INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)",
+                    (user["id"], "BROADCAST_ANNOUNCEMENT", None, details, now)
+                )
                 conn.commit()
-                st.success(f"Announcement sent to {len(recipients)} student(s).")
+
+                if send_in_app:
+                    st.success(f"🔔 UNI HELP notification sent to {notification_count} student(s).")
+                if send_email_broadcast:
+                    if EMAIL_CONFIGURED:
+                        if email_failed:
+                            st.warning(f"✉️ Email broadcast finished: {email_success} sent, {email_failed} failed.")
+                        else:
+                            st.success(f"✉️ Email sent successfully to {email_success} student(s).")
+                    else:
+                        st.info("✉️ Email was not sent because SMTP is not configured. The in-app notification delivery was completed.")
 
     with tabs[6]:
         st.markdown('<div class="uh-admin-section">Platform diagnostics</div>', unsafe_allow_html=True)
