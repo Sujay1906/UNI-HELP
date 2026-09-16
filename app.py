@@ -795,7 +795,7 @@ def authenticate_student_credentials(student_id,password):
     if row is None: return False,"No account found with that Student ID."
     if not verify_password(password,row["password_hash"]): return False,"Incorrect password."
     if row["is_suspended"]: return False,"This account has been suspended. Contact an administrator."
-    if not row["verified"]: return False,"Please complete email and phone verification before logging in."
+    if not row["verified"]: return False,"Please complete email verification before logging in."
     return True,dict(row)
 
 
@@ -1224,6 +1224,27 @@ CUSTOM_CSS = """
 .uh-page-card{background:#fff;border:1px solid #e9e6e1;border-radius:22px;padding:.95rem;box-shadow:0 6px 18px rgba(24,24,24,.05)}.stApp:has(.uh-student-shell) .st-key-impact_borrow button,.stApp:has(.uh-student-shell) .st-key-impact_lend button,.stApp:has(.uh-student-shell) .st-key-impact_tasks button,.stApp:has(.uh-student-shell) .st-key-impact_help button{height:64px!important;min-height:64px!important;background:#fff!important;color:#171717!important;border:1px solid #e8e5e0!important;border-radius:20px!important;box-shadow:0 5px 14px rgba(24,24,24,.045)!important;text-align:left!important;padding:0 1rem!important;font-size:.88rem!important;font-weight:850!important;transition:transform .18s ease,box-shadow .18s ease!important}.stApp:has(.uh-student-shell) .st-key-impact_borrow button:hover,.stApp:has(.uh-student-shell) .st-key-impact_lend button:hover,.stApp:has(.uh-student-shell) .st-key-impact_tasks button:hover,.stApp:has(.uh-student-shell) .st-key-impact_help button:hover{transform:translateY(-2px)!important;box-shadow:0 10px 22px rgba(24,24,24,.08)!important}
 .stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab-list"]{background:#efede9;border-radius:13px;padding:.2rem;gap:.15rem}.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab"]{height:34px;border-radius:10px;color:#777;font-size:.65rem;font-weight:800}.stApp:has(.uh-student-shell) .stTabs [aria-selected="true"]{background:#fff;color:#a6530c;box-shadow:0 3px 9px rgba(0,0,0,.06)}
 @media(max-width:640px){.stApp:has(.uh-student-shell) .main .block-container{padding-left:12px!important;padding-right:12px!important;padding-bottom:95px!important}.uh-home-greeting h1{font-size:1.72rem!important}.uh-coins-card{border-radius:22px;padding:.95rem}.uh-coins-value{font-size:2.35rem}.uh-impact-card{border-radius:18px}.uh-impact-icon{width:44px;height:44px}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav{bottom:7px;width:calc(100% - 14px);border-radius:22px}}
+
+/* Premium mobile-first product UI overrides */
+.stApp:has(.uh-student-shell){background:radial-gradient(circle at 0% 0%,rgba(225,236,255,.9),transparent 28%),radial-gradient(circle at 100% 20%,rgba(255,239,219,.72),transparent 30%),#f7f8fb!important;color:#14233f!important}
+.stApp:has(.uh-student-shell) .main .block-container{max-width:760px!important;padding-top:.55rem!important;padding-bottom:105px!important}
+.stApp:has(.uh-student-shell) [data-testid="stMarkdownContainer"]{color:#17243b}
+.stApp:has(.uh-student-shell) [data-testid="stTextInput"] label,.stApp:has(.uh-student-shell) [data-testid="stTextArea"] label,.stApp:has(.uh-student-shell) [data-testid="stSelectbox"] label,.stApp:has(.uh-student-shell) [data-testid="stNumberInput"] label{color:#33476a!important;font-weight:800!important}
+.stApp:has(.uh-student-shell) input,.stApp:has(.uh-student-shell) textarea,.stApp:has(.uh-student-shell) [data-baseweb="select"]>div{background:#fff!important;color:#16233b!important;border:1px solid #dbe3ee!important;border-radius:14px!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 5px 16px rgba(28,52,88,.045)!important}
+.stApp:has(.uh-student-shell) input::placeholder,.stApp:has(.uh-student-shell) textarea::placeholder{color:#9aa7b8!important}
+.stApp:has(.uh-student-shell) button{border-radius:14px!important;border:1px solid #dbe3ee!important;background:rgba(255,255,255,.9)!important;color:#203452!important;box-shadow:0 5px 15px rgba(31,54,90,.055)!important;font-weight:800!important;transition:all .2s ease!important}
+.stApp:has(.uh-student-shell) button:hover{transform:translateY(-2px)!important;box-shadow:0 10px 24px rgba(31,54,90,.10)!important}
+.stApp:has(.uh-student-shell) .stButton button[kind="primary"]{background:linear-gradient(135deg,#102a56,#1d5dcc)!important;color:white!important;border:0!important}
+.uh-mobile-header{display:flex;align-items:center;justify-content:space-between;padding:.35rem .1rem .2rem;margin-bottom:.2rem}
+.uh-mobile-brand{display:flex;align-items:center;gap:.55rem}.uh-mobile-brand>span{width:39px;height:39px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#fff,#eaf2ff);box-shadow:0 8px 20px rgba(18,53,101,.09);font-size:1.15rem}.uh-mobile-brand strong{display:block;color:#9b5215;font-size:.67rem;letter-spacing:.12em}.uh-mobile-brand small{display:block;color:#1c2e4c;font-size:.92rem;font-weight:900;margin-top:.08rem}.uh-mobile-greeting{font-size:.68rem;color:#748196;font-weight:750}
+.uh-page-kicker{font-size:.62rem;letter-spacing:.15em;color:#a45a19;font-weight:900;margin:.8rem 0 .15rem;text-transform:uppercase}
+.uh-choice-card,.uh-help-card{display:flex;align-items:center;gap:.8rem;padding:.8rem;margin:.45rem 0 .25rem;background:linear-gradient(145deg,rgba(255,255,255,.97),rgba(248,251,255,.94));border:1px solid rgba(214,224,237,.9);border-radius:20px;box-shadow:0 9px 25px rgba(22,48,86,.065),inset 0 1px 0 #fff;position:relative;overflow:hidden}
+.uh-choice-card:after,.uh-help-card:after{content:"";position:absolute;left:-20%;right:-20%;top:-80%;height:100%;background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.55) 50%,transparent 70%);transform:rotate(4deg);animation:uhGloss 5s ease-in-out infinite;pointer-events:none}
+.uh-choice-icon{width:48px;height:48px;border-radius:16px;background:linear-gradient(145deg,#edf6ff,#e3eefb);display:flex;align-items:center;justify-content:center;font-size:1.35rem;flex:none}.uh-choice-copy{flex:1}.uh-choice-copy strong{display:block;color:#172640;font-size:.92rem}.uh-choice-copy span{display:block;color:#7b899d;font-size:.68rem;margin-top:.12rem}
+.uh-choice-card + button,.uh-help-card + button{margin-bottom:.65rem}
+.uh-help-note{margin-top:1rem;padding:.8rem;border-radius:17px;background:#fff7ed;border:1px solid #fed7aa;color:#8a4b14}.uh-help-note strong{display:block;font-size:.76rem}.uh-help-note span{display:block;font-size:.67rem;margin-top:.2rem;line-height:1.45}
+@keyframes uhGloss{0%,55%{left:-80%;opacity:0}65%{opacity:1}85%,100%{left:120%;opacity:0}}
+@media(max-width:640px){.stApp:has(.uh-student-shell) .main .block-container{padding-left:12px!important;padding-right:12px!important}.uh-mobile-brand small{font-size:.84rem}.uh-home-greeting h1{font-size:1.68rem!important}.uh-coins-card{box-shadow:0 13px 28px rgba(163,76,5,.16)!important}}
 </style>
 """
 
@@ -1620,6 +1641,44 @@ def render_admin_login():
     _render_auth_shell_end()
 
 
+# 6.2.1 CREATE / HELP HUBS
+# -----------------------------------------------------------------------------
+
+def render_create_hub(user):
+    st.markdown("<div class='uh-page-kicker'>CREATE</div>", unsafe_allow_html=True)
+    st.markdown("# What do you want to do? ✨")
+    st.caption("Choose an action. Each option opens its own UNI HELP workflow.")
+    actions = [
+        ("📦", "Delivery", "Create or manage campus deliveries.", "Delivery", "create_delivery_hub"),
+        ("🤝", "Borrow / Lend", "Find an item or share something with another student.", "Borrowing", "create_borrow_hub"),
+        ("⚡", "Micro-Task", "Post a small task or help someone nearby.", "Micro-Tasks", "create_task_hub"),
+        ("🙋", "Need Help", "Tell your campus community what you need.", "Help", "create_help_hub"),
+    ]
+    for icon, title, copy, target, key in actions:
+        st.markdown(f"<div class='uh-choice-card'><div class='uh-choice-icon'>{icon}</div><div class='uh-choice-copy'><strong>{title}</strong><span>{copy}</span></div></div>", unsafe_allow_html=True)
+        if st.button(f"Open {title}  →", key=key, use_container_width=True):
+            st.session_state['nav'] = target
+            st.rerun()
+
+
+def render_help_hub(user):
+    st.markdown("<div class='uh-page-kicker'>CAMPUS SUPPORT</div>", unsafe_allow_html=True)
+    st.markdown("# Need Help? 🙋")
+    st.caption("Start with the type of help you need. UNI HELP will take you to the correct workflow.")
+
+    choices = [
+        ("📦", "Delivery help", "Need someone to pick up and deliver something?", "Delivery", "help_delivery"),
+        ("🤝", "Borrow something", "Need an item from another student?", "Borrowing", "help_borrow"),
+        ("⚡", "Small campus task", "Need someone to complete a quick task?", "Micro-Tasks", "help_task"),
+    ]
+    for icon, title, copy, target, key in choices:
+        st.markdown(f"<div class='uh-help-card'><div class='uh-choice-icon'>{icon}</div><div class='uh-choice-copy'><strong>{title}</strong><span>{copy}</span></div></div>", unsafe_allow_html=True)
+        if st.button(f"{title}  →", key=key, use_container_width=True):
+            st.session_state['nav'] = target
+            st.rerun()
+
+    st.markdown("<div class='uh-help-note'><strong>Not sure which one?</strong><span>Choose Delivery for moving an item, Borrowing for an item you need to use, or Micro-Task for a small action you need another student to complete.</span></div>", unsafe_allow_html=True)
+
 # 6.2 DASHBOARD
 # -----------------------------------------------------------------------------
 
@@ -1672,7 +1731,7 @@ def render_dashboard(user):
         ("🔎", "blue", "Find to borrow", "Discover useful items from students", "Borrowing", "impact_borrow"),
         ("📦", "orange", "Lend an item", "Share something another student needs", "Borrowing", "impact_lend"),
         ("☷", "yellow", "Find tasks", "Earn UniCoins by helping around campus", "Micro-Tasks", "impact_tasks"),
-        ("!", "red", "Need help", "Create a delivery or ask your campus community", "Delivery", "impact_help"),
+        ("!", "red", "Need help", "Tell the campus what you need", "Help", "impact_help"),
     ]
     for icon, tone, title, copy, nav, key in impact:
         if st.button(f"{icon}   {title}   ›", key=key, use_container_width=True):
@@ -2979,6 +3038,14 @@ def render_profile(user):
     info2.markdown(f"<div class='uh-detail-card'><span>Student ID</span><strong>{user['student_id'] or '—'}</strong></div>", unsafe_allow_html=True)
     info1.markdown(f"<div class='uh-detail-card'><span>Email</span><strong>{user['email']}</strong></div>", unsafe_allow_html=True)
     info2.markdown(f"<div class='uh-detail-card'><span>Phone</span><strong>{user['phone'] or '—'}</strong></div>", unsafe_allow_html=True)
+    st.markdown("### Account shortcuts")
+    q1, q2, q3 = st.columns(3)
+    if q1.button("🔔 Notifications", use_container_width=True, key="profile_notifications"):
+        st.session_state["nav"] = "Notifications"; st.rerun()
+    if q2.button("⚖️ Disputes", use_container_width=True, key="profile_disputes"):
+        st.session_state["nav"] = "Disputes"; st.rerun()
+    if q3.button("🚪 Logout", use_container_width=True, key="profile_logout"):
+        st.session_state["user"] = None; st.session_state["auth_mode"] = "Home"; st.session_state["nav"] = "Dashboard"; st.rerun()
     st.markdown("### Your UNI HELP stats")
     avg = round(user["rating_sum"] / user["rating_count"], 1) if user["rating_count"] else 0
     p1, p2, p3, p4 = st.columns(4)
@@ -2986,20 +3053,24 @@ def render_profile(user):
 
 
 def render_student_topbar(user):
-    """Compact app header for students; desktop sidebar is intentionally replaced by mobile navigation."""
-    unread = get_notifications(user['id'], unread_only=True, limit=1)
+    """Premium compact student header with quick Dashboard + notification access."""
+    unread = get_notifications(user['id'], unread_only=True, limit=50)
     current = st.session_state.get('nav', 'Dashboard')
-    title_map = {'Dashboard':'Home', 'Micro-Tasks':'Tasks', 'Leaders':'Leaders', 'Profile':'Profile', 'Delivery':'Delivery', 'Borrowing':'Borrowing', 'Wallet':'Wallet'}
+    title_map = {'Dashboard':'Home', 'Create':'Create', 'Help':'Need Help', 'Micro-Tasks':'Tasks', 'Leaders':'Leaders', 'Profile':'Profile', 'Delivery':'Delivery', 'Borrowing':'Borrowing', 'Wallet':'Wallet', 'Notifications':'Notifications'}
     title = title_map.get(current, current)
+    first = str(user['full_name']).split()[0]
     st.markdown("<div class='uh-student-shell'></div>", unsafe_allow_html=True)
-    st.markdown(f"""<div class='uh-app-header'><div><div class='uh-app-header-brand'>🎓 UNI HELP</div><div class='uh-app-header-title'>{title}</div></div><div class='uh-app-header-user'>Hi, {str(user['full_name']).split()[0]}</div></div>""", unsafe_allow_html=True)
-    h1, h2 = st.columns([5,1])
-    with h2:
-        st.markdown("<div class='uh-header-icon'>", unsafe_allow_html=True)
-        if st.button(f"🔔{(' ' + str(len(unread))) if unread else ''}", key='student_notifications', use_container_width=True):
+    st.markdown(f"""<div class='uh-mobile-header'>
+      <div class='uh-mobile-brand'><span>🎓</span><div><strong>UNI HELP</strong><small>{title}</small></div></div>
+      <div class='uh-mobile-actions'><div class='uh-mobile-greeting'>Hi, {first}</div></div>
+    </div>""", unsafe_allow_html=True)
+    c1,c2,c3 = st.columns([1.1, 4.2, 1.1])
+    with c1:
+        if current != 'Dashboard' and st.button('⌂', key='top_home', help='Dashboard', use_container_width=True):
+            st.session_state['nav']='Dashboard'; st.rerun()
+    with c3:
+        if st.button(f"🔔 {len(unread) if unread else ''}", key='student_notifications', use_container_width=True):
             st.session_state['nav']='Notifications'; st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
-
 
 def render_sidebar(user):
     if user["role"] == "admin":
@@ -3026,7 +3097,7 @@ def render_student_bottom_nav(user):
                 if target == 'CREATE':
                     st.markdown("<div class='uh-nav-plus'>", unsafe_allow_html=True)
                     if st.button(icon, key='bottom_create', use_container_width=True):
-                        st.session_state['nav'] = 'Delivery'; st.rerun()
+                        st.session_state['nav'] = 'Create'; st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
                 else:
                     cls = 'uh-nav-active' if current == target else ''
@@ -3063,6 +3134,10 @@ def main():
     nav = st.session_state.get("nav", "Dashboard")
     if nav == "Dashboard":
         render_dashboard(user)
+    elif nav == "Create":
+        render_create_hub(user)
+    elif nav == "Help":
+        render_help_hub(user)
     elif nav == "Delivery":
         render_delivery(user)
     elif nav == "Borrowing":
