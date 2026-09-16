@@ -888,6 +888,11 @@ st.set_page_config(page_title="UNI HELP", page_icon="🎓", layout="wide")
 
 CUSTOM_CSS = """
 <style>
+/* UNI HELP AUTH VIEWPORT: app-like first screen */
+html,body,[data-testid="stAppViewContainer"]{overflow:hidden!important}
+[data-testid="stHeader"],[data-testid="stToolbar"],footer{display:none!important}
+[data-testid="stAppViewContainer"] > .main{padding-top:0!important}
+[data-testid="stAppViewContainer"] .block-container{padding-top:0!important;padding-bottom:0!important;max-width:100%!important}
 :root{
   --uh-navy:#081a3a; --uh-blue:#2563eb; --uh-blue2:#60a5fa; --uh-cyan:#22d3ee;
   --uh-orange:#f97316; --uh-bg:#f4f8ff; --uh-text:#0f1f3d; --uh-muted:#64748b;
@@ -900,24 +905,24 @@ CUSTOM_CSS = """
     radial-gradient(circle at 82% 92%,rgba(249,115,22,.08),transparent 24%),
     linear-gradient(135deg,#f8fbff 0%,#f3f7fd 48%,#eef5ff 100%);
 }
-.uh-auth-shell{min-height:calc(100dvh - 1rem);display:flex;align-items:center;justify-content:center;padding:.45rem .8rem;box-sizing:border-box;overflow:hidden;position:relative}
+.uh-auth-shell{height:100dvh;min-height:0;display:flex;align-items:center;justify-content:center;padding:.55rem .8rem;box-sizing:border-box;overflow:hidden;position:relative}
 .uh-auth-shell:before,.uh-auth-shell:after{content:"";position:absolute;border-radius:999px;filter:blur(2px);pointer-events:none;animation:uhFloat 7s ease-in-out infinite}
 .uh-auth-shell:before{width:190px;height:190px;left:-75px;top:11%;background:radial-gradient(circle,rgba(37,99,235,.16),transparent 68%)}
 .uh-auth-shell:after{width:230px;height:230px;right:-90px;bottom:5%;background:radial-gradient(circle,rgba(249,115,22,.12),transparent 68%);animation-delay:-3s}
-.uh-auth-content{width:min(100%,460px);margin:auto;position:relative;z-index:1}
-.uh-auth-hero{text-align:center;margin:0 auto .6rem;animation:uhFadeUp .55s cubic-bezier(.22,1,.36,1) both}
-.uh-auth-logo-wrap{position:relative;width:62px;height:62px;margin:0 auto .45rem}
+.uh-auth-content{width:min(100%,430px);margin:auto;position:relative;z-index:1;max-height:calc(100dvh - 1.1rem)}
+.uh-auth-hero{text-align:center;margin:0 auto .42rem;animation:uhFadeUp .55s cubic-bezier(.22,1,.36,1) both}
+.uh-auth-logo-wrap{position:relative;width:54px;height:54px;margin:0 auto .28rem}
 .uh-auth-logo-ring{position:absolute;inset:-5px;border-radius:20px;background:linear-gradient(135deg,rgba(37,99,235,.13),rgba(96,165,250,.03));animation:uhPulse 2.8s ease-in-out infinite}
-.uh-auth-logo-mark{position:relative;width:62px;height:62px;border-radius:20px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#ffffff,#edf4ff);border:1px solid #d6e3f4;box-shadow:0 14px 32px rgba(8,26,58,.12),inset 0 1px 0 #fff;font-size:1.7rem}
+.uh-auth-logo-mark{position:relative;width:54px;height:54px;border-radius:17px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#ffffff,#edf4ff);border:1px solid #d6e3f4;box-shadow:0 14px 32px rgba(8,26,58,.12),inset 0 1px 0 #fff;font-size:1.4rem}
 .uh-auth-kicker{display:inline-flex;align-items:center;gap:.35rem;padding:.23rem .52rem;border-radius:999px;background:rgba(255,255,255,.75);border:1px solid #dfe8f3;color:#31507d;font-size:.6rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;margin-bottom:.34rem;box-shadow:0 4px 12px rgba(8,26,58,.04)}
 .uh-auth-kicker-dot{width:6px;height:6px;border-radius:999px;background:linear-gradient(135deg,#22c55e,#16a34a);box-shadow:0 0 0 4px rgba(34,197,94,.10)}
-.uh-auth-hero h1{color:var(--uh-navy)!important;font-size:2.2rem!important;line-height:1!important;margin:0!important;letter-spacing:-.06em;font-weight:900}
-.uh-auth-tagline{color:#23385b!important;font-size:.94rem;line-height:1.28;margin:.36rem 0 .15rem;font-weight:700}
-.uh-auth-subtitle{color:#6b7d97!important;font-size:.72rem;margin:0;letter-spacing:.08em;font-weight:700}
-.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{position:relative;background:var(--uh-card)!important;border:1px solid rgba(214,226,241,.92)!important;border-radius:24px!important;box-shadow:0 26px 60px rgba(8,26,58,.12),0 6px 18px rgba(8,26,58,.05)!important;backdrop-filter:blur(18px);padding:1rem!important;animation:uhCardIn .6s .06s cubic-bezier(.22,1,.36,1) both;overflow:hidden}
+.uh-auth-hero h1{color:var(--uh-navy)!important;font-size:1.95rem!important;line-height:1!important;margin:0!important;letter-spacing:-.06em;font-weight:900}
+.uh-auth-tagline{color:#23385b!important;font-size:.84rem;line-height:1.28;margin:.36rem 0 .15rem;font-weight:700}
+.uh-auth-subtitle{color:#6b7d97!important;font-size:.65rem;margin:0;letter-spacing:.08em;font-weight:700}
+.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{position:relative;background:var(--uh-card)!important;border:1px solid rgba(214,226,241,.92)!important;border-radius:24px!important;box-shadow:0 26px 60px rgba(8,26,58,.12),0 6px 18px rgba(8,26,58,.05)!important;backdrop-filter:blur(18px);padding:.78rem!important;animation:uhCardIn .6s .06s cubic-bezier(.22,1,.36,1) both;overflow:hidden}
 .stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]:before{content:"";position:absolute;left:-10%;right:-10%;top:-45%;height:70%;background:radial-gradient(circle at 50% 75%,rgba(37,99,235,.075),transparent 58%);pointer-events:none}
 .stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]>div{position:relative;z-index:1}
-.uh-auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:.25rem;background:#edf3fa;border:1px solid #dde7f3;border-radius:13px;padding:.23rem;margin-bottom:.72rem}
+.uh-auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:.25rem;background:#edf3fa;border:1px solid #dde7f3;border-radius:13px;padding:.23rem;margin-bottom:.5rem}
 .uh-auth-tab-button button{border:0!important;background:transparent!important;color:#71819a!important;box-shadow:none!important;min-height:38px!important;border-radius:10px!important;font-size:.75rem!important;font-weight:850!important;letter-spacing:.04em;transition:all .18s ease!important}
 .uh-auth-tab-button-active button{background:linear-gradient(135deg,#fff,#f8fbff)!important;color:var(--uh-navy)!important;box-shadow:0 6px 14px rgba(8,26,58,.08),inset 0 0 0 1px #e4ebf4!important}
 .uh-auth-card-title{color:var(--uh-navy);font-size:1.2rem;font-weight:850;margin:.12rem 0 .1rem;letter-spacing:-.02em}
@@ -927,9 +932,9 @@ CUSTOM_CSS = """
 .uh-otp-note{text-align:center;padding:.42rem .6rem;background:linear-gradient(135deg,#eff6ff,#f5f9ff);border:1px solid #c9dcfb;color:#1e40af!important;border-radius:10px;font-size:.69rem;margin:.35rem 0 .5rem}
 .uh-auth-status{padding:.5rem .62rem;border-radius:10px;font-size:.7rem;font-weight:700;margin:.35rem 0;background:#f8fbff;border:1px solid #dce8f6;color:#375273}.uh-auth-status.ok{background:#ecfdf5;color:#047857;border-color:#a7f3d0}.uh-auth-status.err{background:#fff1f2;color:#be123c;border-color:#fecdd3}
 .stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label,.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label p{color:#30425f!important;font-weight:750!important;font-size:.7rem!important}
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{border:1px solid #c8d4e3!important;border-radius:11px!important;background:rgba(255,255,255,.96)!important;color:#0f172a!important;min-height:40px!important;box-shadow:inset 0 1px 1px rgba(8,26,58,.02)!important;font-size:.83rem!important;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease!important}
+.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{border:1px solid #c8d4e3!important;border-radius:11px!important;background:rgba(255,255,255,.96)!important;color:#0f172a!important;min-height:36px!important;box-shadow:inset 0 1px 1px rgba(8,26,58,.02)!important;font-size:.83rem!important;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease!important}
 .stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input:focus{border-color:#5b8def!important;box-shadow:0 0 0 3px rgba(37,99,235,.11),0 5px 14px rgba(37,99,235,.06)!important;transform:translateY(-1px)}
-.stApp:has(.uh-auth-shell) button{border-radius:11px!important;min-height:40px!important;font-weight:800!important;transition:transform .16s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease!important}
+.stApp:has(.uh-auth-shell) button{border-radius:11px!important;min-height:36px!important;font-weight:800!important;transition:transform .16s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease!important}
 .stApp:has(.uh-auth-shell) button:hover{transform:translateY(-2px)}
 .stApp:has(.uh-auth-shell) button:active{transform:translateY(0) scale(.985)}
 .stApp:has(.uh-auth-shell) button[kind="primary"]{background:linear-gradient(135deg,#2563eb 0%,#4f7cff 62%,#60a5fa 100%)!important;color:#fff!important;border:0!important;box-shadow:0 10px 20px rgba(37,99,235,.20)!important;position:relative;overflow:hidden}
@@ -945,7 +950,7 @@ CUSTOM_CSS = """
 @keyframes uhFloat{0%,100%{transform:translate3d(0,0,0)}50%{transform:translate3d(10px,-12px,0)}}
 @keyframes uhPulse{0%,100%{transform:scale(.98);opacity:.9}50%{transform:scale(1.05);opacity:1}}
 @keyframes uhShimmer{0%{left:-35%}55%,100%{left:120%}}
-@media(max-width:640px){.uh-auth-shell{min-height:100dvh;padding:.35rem .45rem;overflow:visible}.uh-auth-content{width:min(100%,410px)}.uh-auth-hero{margin-bottom:.48rem}.uh-auth-logo-wrap,.uh-auth-logo-mark{width:52px;height:52px}.uh-auth-logo-mark{border-radius:17px;font-size:1.4rem}.uh-auth-hero h1{font-size:1.9rem!important}.uh-auth-tagline{font-size:.82rem}.uh-auth-subtitle{font-size:.66rem}.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{padding:.78rem!important;border-radius:19px!important}.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{min-height:40px!important}.stApp:has(.uh-auth-shell) button{min-height:41px!important}.uh-auth-shell:before{left:-110px}.uh-auth-shell:after{right:-120px}}
+@media(max-width:640px){.uh-auth-shell{height:100dvh;padding:.35rem .5rem;overflow:hidden}.uh-auth-content{width:min(100%,390px);max-height:calc(100dvh - .7rem)}.uh-auth-hero{margin-bottom:.28rem}.uh-auth-logo-wrap,.uh-auth-logo-mark{width:48px;height:48px}.uh-auth-logo-mark{border-radius:17px;font-size:1.4rem}.uh-auth-hero h1{font-size:1.72rem!important}.uh-auth-tagline{font-size:.76rem}.uh-auth-subtitle{font-size:.6rem}.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{padding:.62rem!important;border-radius:17px!important}.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{min-height:40px!important}.stApp:has(.uh-auth-shell) button{min-height:41px!important}.uh-auth-shell:before{left:-140px}.uh-auth-shell:after{right:-150px}}
 </style>
 """
 
@@ -996,7 +1001,7 @@ def _render_auth_shell_end():
 def _render_auth_hero():
     st.markdown(
         '<div class="uh-auth-hero">'
-        '<div class="uh-auth-kicker"><span class="uh-auth-kicker-dot"></span>Student-powered campus network</div>'
+        ''
         '<div class="uh-auth-logo-wrap"><div class="uh-auth-logo-ring"></div><div class="uh-auth-logo-mark">🎓</div></div>'
         '<h1>UNI HELP</h1>'
         '<p class="uh-auth-tagline">Your campus. Your community.<br>Someone can help.</p>'
