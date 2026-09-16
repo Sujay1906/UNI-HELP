@@ -981,6 +981,231 @@ CUSTOM_CSS = """
 @media(max-width:760px){.uh-admin-shell{padding:.9rem;border-radius:18px}.uh-admin-title{font-size:1.35rem}.uh-admin-metric{min-height:80px;padding:.7rem}.uh-admin-metric .value{font-size:1.15rem}}
 
 .uh-student-shell{display:block}
+
+/* =====================================================================
+   UNI HELP — GLASS / GLOSSY STUDENT APP THEME
+   Keeps the existing Streamlit widgets and backend intact while making
+   the student experience feel like a real mobile-first product.
+   ===================================================================== */
+.stApp:has(.uh-student-shell){
+  --uh-app-bg:#eef5ff;
+  --uh-app-bg-2:#f8fbff;
+  --uh-ink:#10264a;
+  --uh-ink-soft:#526784;
+  --uh-border:rgba(255,255,255,.72);
+  background:
+    radial-gradient(circle at 8% 8%,rgba(37,99,235,.16),transparent 25%),
+    radial-gradient(circle at 92% 18%,rgba(34,211,238,.12),transparent 24%),
+    radial-gradient(circle at 80% 90%,rgba(96,165,250,.13),transparent 27%),
+    linear-gradient(145deg,var(--uh-app-bg-2) 0%,var(--uh-app-bg) 52%,#edf4ff 100%)!important;
+  color:var(--uh-ink)!important;
+}
+.stApp:has(.uh-student-shell) .main{
+  background:transparent!important;
+}
+.stApp:has(.uh-student-shell) .main .block-container{
+  position:relative;
+  max-width:720px!important;
+  padding:18px 20px 105px!important;
+  margin:0 auto!important;
+}
+.stApp:has(.uh-student-shell) .main .block-container:before,
+.stApp:has(.uh-student-shell) .main .block-container:after{
+  content:"";
+  position:fixed;
+  width:220px;height:220px;border-radius:50%;
+  pointer-events:none;z-index:-1;filter:blur(4px);
+  animation:uhAmbient 9s ease-in-out infinite;
+}
+.stApp:has(.uh-student-shell) .main .block-container:before{
+  left:-90px;top:18%;
+  background:radial-gradient(circle,rgba(37,99,235,.13),transparent 68%);
+}
+.stApp:has(.uh-student-shell) .main .block-container:after{
+  right:-100px;bottom:12%;
+  background:radial-gradient(circle,rgba(34,211,238,.10),transparent 68%);
+  animation-delay:-4s;
+}
+
+/* Native Streamlit text: force readable contrast regardless of the
+   selected Streamlit Cloud theme. */
+.stApp:has(.uh-student-shell) .stMarkdown,
+.stApp:has(.uh-student-shell) .stMarkdown p,
+.stApp:has(.uh-student-shell) label,
+.stApp:has(.uh-student-shell) label p,
+.stApp:has(.uh-student-shell) [data-testid="stCaptionContainer"]{
+  color:var(--uh-ink)!important;
+}
+.stApp:has(.uh-student-shell) h1,
+.stApp:has(.uh-student-shell) h2,
+.stApp:has(.uh-student-shell) h3,
+.stApp:has(.uh-student-shell) h4{
+  color:var(--uh-ink)!important;
+}
+.stApp:has(.uh-student-shell) [data-testid="stWidgetLabel"] p,
+.stApp:has(.uh-student-shell) [data-testid="stWidgetLabel"] label{
+  color:#344b6d!important;
+  font-weight:800!important;
+}
+
+/* Glassy, nearly transparent fields — no ugly dark boxes. */
+.stApp:has(.uh-student-shell) div[data-testid="stTextInput"],
+.stApp:has(.uh-student-shell) div[data-testid="stTextArea"],
+.stApp:has(.uh-student-shell) div[data-testid="stNumberInput"],
+.stApp:has(.uh-student-shell) div[data-testid="stSelectbox"],
+.stApp:has(.uh-student-shell) div[data-testid="stMultiSelect"],
+.stApp:has(.uh-student-shell) div[data-testid="stDateInput"]{
+  position:relative;
+}
+.stApp:has(.uh-student-shell) div[data-testid="stTextInput"] input,
+.stApp:has(.uh-student-shell) div[data-testid="stTextArea"] textarea,
+.stApp:has(.uh-student-shell) div[data-testid="stNumberInput"] input,
+.stApp:has(.uh-student-shell) div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+.stApp:has(.uh-student-shell) div[data-testid="stMultiSelect"] [data-baseweb="select"] > div,
+.stApp:has(.uh-student-shell) div[data-testid="stDateInput"] input{
+  background:rgba(255,255,255,.48)!important;
+  color:#10264a!important;
+  -webkit-text-fill-color:#10264a!important;
+  border:1px solid rgba(116,145,184,.28)!important;
+  border-radius:15px!important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.88),
+    inset 0 -1px 0 rgba(148,163,184,.08),
+    0 8px 22px rgba(31,73,125,.055)!important;
+  backdrop-filter:blur(14px)!important;
+  transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease,background .18s ease!important;
+}
+.stApp:has(.uh-student-shell) div[data-testid="stTextInput"] input,
+.stApp:has(.uh-student-shell) div[data-testid="stNumberInput"] input,
+.stApp:has(.uh-student-shell) div[data-testid="stDateInput"] input{min-height:43px!important;}
+.stApp:has(.uh-student-shell) div[data-testid="stTextArea"] textarea{min-height:105px!important;}
+.stApp:has(.uh-student-shell) div[data-testid="stTextInput"] input:focus,
+.stApp:has(.uh-student-shell) div[data-testid="stTextArea"] textarea:focus,
+.stApp:has(.uh-student-shell) div[data-testid="stNumberInput"] input:focus,
+.stApp:has(.uh-student-shell) div[data-testid="stSelectbox"] [data-baseweb="select"] > div:focus-within,
+.stApp:has(.uh-student-shell) div[data-testid="stMultiSelect"] [data-baseweb="select"] > div:focus-within,
+.stApp:has(.uh-student-shell) div[data-testid="stDateInput"] input:focus{
+  background:rgba(255,255,255,.72)!important;
+  border-color:rgba(37,99,235,.50)!important;
+  box-shadow:
+    0 0 0 3px rgba(37,99,235,.09),
+    0 12px 28px rgba(37,99,235,.09),
+    inset 0 1px 0 rgba(255,255,255,.95)!important;
+  transform:translateY(-1px);
+  outline:none!important;
+}
+.stApp:has(.uh-student-shell) input::placeholder,
+.stApp:has(.uh-student-shell) textarea::placeholder{
+  color:#8192aa!important;
+  opacity:1!important;
+}
+
+/* Native Streamlit buttons: premium glass with blue primary actions. */
+.stApp:has(.uh-student-shell) button{
+  color:#17345d!important;
+  border:1px solid rgba(107,135,173,.26)!important;
+  border-radius:14px!important;
+  background:rgba(255,255,255,.52)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 8px 20px rgba(31,73,125,.06)!important;
+  backdrop-filter:blur(12px)!important;
+  transition:transform .16s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease!important;
+}
+.stApp:has(.uh-student-shell) button:hover{
+  color:#0b3f91!important;
+  background:rgba(255,255,255,.76)!important;
+  border-color:rgba(37,99,235,.32)!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.96),0 12px 25px rgba(31,73,125,.10)!important;
+  transform:translateY(-2px);
+}
+.stApp:has(.uh-student-shell) button:active{transform:translateY(0) scale(.985)!important;}
+.stApp:has(.uh-student-shell) button[kind="primary"]{
+  color:#fff!important;
+  border:0!important;
+  background:linear-gradient(135deg,#123a7a,#2563eb 58%,#4f8cff)!important;
+  box-shadow:0 12px 25px rgba(37,99,235,.22),inset 0 1px 0 rgba(255,255,255,.24)!important;
+  position:relative;overflow:hidden;
+}
+.stApp:has(.uh-student-shell) button[kind="primary"]:after{
+  content:"";position:absolute;top:-50%;left:-35%;width:28%;height:200%;
+  transform:rotate(18deg);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.28),transparent);
+  animation:uhGloss 3.4s linear infinite;
+}
+
+/* Make Streamlit expanders, bordered containers and forms feel like
+   translucent product surfaces instead of opaque default boxes. */
+.stApp:has(.uh-student-shell) [data-testid="stExpander"],
+.stApp:has(.uh-student-shell) [data-testid="stVerticalBlockBorderWrapper"],
+.stApp:has(.uh-student-shell) [data-testid="stForm"]{
+  background:rgba(255,255,255,.34)!important;
+  border:1px solid rgba(255,255,255,.72)!important;
+  border-radius:20px!important;
+  box-shadow:0 12px 32px rgba(31,73,125,.055),inset 0 1px 0 rgba(255,255,255,.86)!important;
+  backdrop-filter:blur(14px)!important;
+}
+.stApp:has(.uh-student-shell) [data-testid="stExpander"] summary,
+.stApp:has(.uh-student-shell) [data-testid="stExpander"] summary p{
+  color:#10264a!important;
+  font-weight:850!important;
+}
+
+/* Tables / dataframe surfaces */
+.stApp:has(.uh-student-shell) [data-testid="stDataFrame"],
+.stApp:has(.uh-student-shell) [data-testid="stTable"]{
+  border-radius:16px!important;
+  overflow:hidden!important;
+  box-shadow:0 10px 28px rgba(31,73,125,.055)!important;
+}
+
+/* Tabs are compact glass pills. */
+.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab-list"]{
+  background:rgba(255,255,255,.40)!important;
+  border:1px solid rgba(255,255,255,.72)!important;
+  border-radius:15px!important;
+  padding:.25rem!important;
+  gap:.18rem!important;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.85),0 7px 18px rgba(31,73,125,.045)!important;
+  backdrop-filter:blur(14px)!important;
+}
+.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab"]{
+  color:#647792!important;
+  border-radius:11px!important;
+  font-weight:850!important;
+}
+.stApp:has(.uh-student-shell) .stTabs [aria-selected="true"]{
+  color:#123b79!important;
+  background:rgba(255,255,255,.76)!important;
+  box-shadow:0 5px 14px rgba(31,73,125,.08),inset 0 1px 0 rgba(255,255,255,.9)!important;
+}
+
+/* Keep the fixed mobile navigation glossy and readable. */
+.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav{
+  background:rgba(255,255,255,.62)!important;
+  border:1px solid rgba(255,255,255,.86)!important;
+  box-shadow:0 16px 38px rgba(31,73,125,.16),inset 0 1px 0 rgba(255,255,255,.95)!important;
+  backdrop-filter:blur(22px) saturate(145%)!important;
+}
+.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav button{
+  color:#647792!important;
+  background:transparent!important;
+  border:0!important;
+  box-shadow:none!important;
+}
+.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav .uh-nav-active button{color:#1554ad!important;}
+
+@keyframes uhGloss{0%{left:-35%}55%,100%{left:125%}}
+@keyframes uhAmbient{0%,100%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(10px,-14px,0) scale(1.04)}}
+
+@media(max-width:640px){
+  .stApp:has(.uh-student-shell) .main .block-container{max-width:100%!important;padding:12px 12px 100px!important;}
+  .stApp:has(.uh-student-shell) div[data-testid="stTextInput"] input,
+  .stApp:has(.uh-student-shell) div[data-testid="stNumberInput"] input,
+  .stApp:has(.uh-student-shell) div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
+  .stApp:has(.uh-student-shell) div[data-testid="stMultiSelect"] [data-baseweb="select"] > div,
+  .stApp:has(.uh-student-shell) div[data-testid="stDateInput"] input{min-height:45px!important;}
+  .stApp:has(.uh-student-shell) button{min-height:44px!important;}
+}
+
 /* Mobile-first student app shell */
 .stApp:has(.uh-student-shell){background:#f7f7f5!important}
 .stApp:has(.uh-student-shell) [data-testid="stSidebar"]{display:none!important}
@@ -999,49 +1224,6 @@ CUSTOM_CSS = """
 .uh-page-card{background:#fff;border:1px solid #e9e6e1;border-radius:22px;padding:.95rem;box-shadow:0 6px 18px rgba(24,24,24,.05)}.stApp:has(.uh-student-shell) .st-key-impact_borrow button,.stApp:has(.uh-student-shell) .st-key-impact_lend button,.stApp:has(.uh-student-shell) .st-key-impact_tasks button,.stApp:has(.uh-student-shell) .st-key-impact_help button{height:64px!important;min-height:64px!important;background:#fff!important;color:#171717!important;border:1px solid #e8e5e0!important;border-radius:20px!important;box-shadow:0 5px 14px rgba(24,24,24,.045)!important;text-align:left!important;padding:0 1rem!important;font-size:.88rem!important;font-weight:850!important;transition:transform .18s ease,box-shadow .18s ease!important}.stApp:has(.uh-student-shell) .st-key-impact_borrow button:hover,.stApp:has(.uh-student-shell) .st-key-impact_lend button:hover,.stApp:has(.uh-student-shell) .st-key-impact_tasks button:hover,.stApp:has(.uh-student-shell) .st-key-impact_help button:hover{transform:translateY(-2px)!important;box-shadow:0 10px 22px rgba(24,24,24,.08)!important}
 .stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab-list"]{background:#efede9;border-radius:13px;padding:.2rem;gap:.15rem}.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab"]{height:34px;border-radius:10px;color:#777;font-size:.65rem;font-weight:800}.stApp:has(.uh-student-shell) .stTabs [aria-selected="true"]{background:#fff;color:#a6530c;box-shadow:0 3px 9px rgba(0,0,0,.06)}
 @media(max-width:640px){.stApp:has(.uh-student-shell) .main .block-container{padding-left:12px!important;padding-right:12px!important;padding-bottom:95px!important}.uh-home-greeting h1{font-size:1.72rem!important}.uh-coins-card{border-radius:22px;padding:.95rem}.uh-coins-value{font-size:2.35rem}.uh-impact-card{border-radius:18px}.uh-impact-icon{width:44px;height:44px}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav{bottom:7px;width:calc(100% - 14px);border-radius:22px}}
-
-/* --------------------------------------------------------------------------
-   Student app readability hardening
-   Streamlit can inherit the browser/theme text color on some deployed builds.
-   Keep the mobile product shell explicitly light so every page stays readable.
-   -------------------------------------------------------------------------- */
-.stApp:has(.uh-student-shell){background:#f7f7f5!important;color:#171717!important}
-.stApp:has(.uh-student-shell) .main .block-container{max-width:620px!important;padding-top:14px!important;color:#171717!important}
-.stApp:has(.uh-student-shell) .main .block-container h1,
-.stApp:has(.uh-student-shell) .main .block-container h2,
-.stApp:has(.uh-student-shell) .main .block-container h3,
-.stApp:has(.uh-student-shell) .main .block-container h4,
-.stApp:has(.uh-student-shell) .main .block-container p,
-.stApp:has(.uh-student-shell) .main .block-container li,
-.stApp:has(.uh-student-shell) .main .block-container [data-testid="stMarkdownContainer"],
-.stApp:has(.uh-student-shell) .main .block-container [data-testid="stCaptionContainer"]{color:#171717!important}
-.stApp:has(.uh-student-shell) .main .block-container [data-testid="stCaptionContainer"]{color:#777!important}
-.stApp:has(.uh-student-shell) .main .block-container label,
-.stApp:has(.uh-student-shell) .main .block-container label p{color:#343434!important}
-.stApp:has(.uh-student-shell) .main .block-container input,
-.stApp:has(.uh-student-shell) .main .block-container textarea,
-.stApp:has(.uh-student-shell) .main .block-container [data-baseweb="select"]{color:#171717!important;background:#fff!important}
-.stApp:has(.uh-student-shell) .main .block-container input::placeholder,
-.stApp:has(.uh-student-shell) .main .block-container textarea::placeholder{color:#9a9a9a!important}
-.stApp:has(.uh-student-shell) .main .block-container [data-testid="stAlert"]{color:#171717!important}
-.stApp:has(.uh-student-shell) .main .block-container [data-testid="stMetricLabel"],
-.stApp:has(.uh-student-shell) .main .block-container [data-testid="stMetricValue"]{color:#171717!important}
-
-/* Notifications / list pages */
-.uh-notifications-page{margin-top:.25rem}
-.uh-notifications-title{font-size:1.65rem;font-weight:950;letter-spacing:-.045em;color:#171717!important;margin:.15rem 0 .2rem}
-.uh-notifications-subtitle{font-size:.75rem;color:#777!important;margin:0 0 .9rem}
-.uh-notification-card{display:flex;gap:.72rem;align-items:flex-start;background:#fff;border:1px solid #e8e5e0;border-radius:18px;padding:.85rem .9rem;margin:.55rem 0;box-shadow:0 6px 16px rgba(24,24,24,.045);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
-.uh-notification-card:hover{transform:translateY(-2px);box-shadow:0 10px 22px rgba(24,24,24,.08);border-color:#ddd8d0}
-.uh-notification-dot{width:10px;height:10px;border-radius:50%;background:#2589c7;flex:none;margin-top:.28rem;box-shadow:0 0 0 5px #eaf5fb}
-.uh-notification-dot.read{background:#b9b9b9;box-shadow:0 0 0 5px #f1f1f1}
-.uh-notification-message{font-size:.78rem;line-height:1.42;color:#222!important;font-weight:700}
-.uh-notification-time{font-size:.61rem;color:#929292!important;margin-top:.25rem}
-.uh-notifications-action button{border-radius:11px!important;background:#fff!important;color:#8f4d13!important;border:1px solid #eadfd3!important;box-shadow:none!important;font-size:.68rem!important;font-weight:850!important}
-
-/* Keep the mobile shell compact and app-like on desktop browsers too. */
-@media(min-width:761px){.stApp:has(.uh-student-shell) .main .block-container{padding-top:18px!important}.stApp:has(.uh-student-shell) .main{max-width:100%!important}}
-
 </style>
 """
 
@@ -2211,20 +2393,17 @@ def render_microtasks(user):
 # -----------------------------------------------------------------------------
 
 def render_notifications(user):
-    st.markdown("<div class='uh-notifications-page'>", unsafe_allow_html=True)
-    st.markdown("<div class='uh-page-kicker'>UPDATES</div><div class='uh-notifications-title'>Notifications</div><div class='uh-notifications-subtitle'>Stay up to date with your campus activity.</div>", unsafe_allow_html=True)
-    if st.button("Mark all as read", key="mark_all_notifications"):
+    st.markdown("## 📨 Notifications")
+    if st.button("Mark all as read"):
         mark_notifications_read(user["id"])
         st.rerun()
     notifs = get_notifications(user["id"], limit=100)
     if not notifs:
-        st.markdown("<div class='uh-page-card'><strong>No notifications yet</strong><div style='font-size:.7rem;color:#777;margin-top:.25rem'>You're all caught up.</div></div>", unsafe_allow_html=True)
+        st.caption("No notifications.")
     for n in notifs:
-        read_cls = "read" if n["is_read"] else ""
-        message = str(n["message"]).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        created = str(n["created_at"])[:19].replace("T", " ")
-        st.markdown(f"<div class='uh-notification-card'><div class='uh-notification-dot {read_cls}'></div><div><div class='uh-notification-message'>{message}</div><div class='uh-notification-time'>{created}</div></div></div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+        icon = "🔵" if not n["is_read"] else "⚪"
+        st.markdown(f"{icon} {n['message']}  \n<small>{n['created_at'][:19].replace('T',' ')}</small>", unsafe_allow_html=True)
+        st.divider()
 
 
 def render_wallet(user):
@@ -2828,5 +3007,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-   
   
