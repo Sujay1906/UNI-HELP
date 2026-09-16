@@ -2108,7 +2108,7 @@ def main():
         render_disputes(user)
     elif nav == "Admin":
         render_admin(user)
-        else:
+    else:
         render_dashboard(user)
 
 
