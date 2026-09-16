@@ -1067,7 +1067,9 @@ def _send_registration_sms_otp(user_id):
 
 
 def _clear_registration_state():
-    for key in ("pending_registration_user_id", "registration_email_verified", "registration_phone_otp_sent", "registration_email_resend_at", "registration_sms_resend_at"):
+    # Registration now uses email verification only.  Keep unrelated
+    # authentication/session state untouched.
+    for key in ("pending_registration_user_id", "registration_email_verified", "registration_email_resend_at", "registration_phone_otp_sent", "registration_sms_resend_at", "registration_phone_verified"):
         st.session_state.pop(key, None)
 
 
@@ -1148,7 +1150,11 @@ def render_register():
     _render_auth_hero()
     with st.container(border=True):
         _auth_tabs("register")
-        st.markdown('<div class="uh-auth-card-title">Create your account</div><div class="uh-auth-card-copy">Use any valid email address and a mobile number that can receive SMS.</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="uh-auth-card-title">Create your account</div>'
+            '<div class="uh-auth-card-copy">Use any valid email address. Your phone number is kept for UNI HELP services, not OTP verification.</div>',
+            unsafe_allow_html=True,
+        )
         pending_id = st.session_state.get("pending_registration_user_id")
         email_verified = bool(st.session_state.get("registration_email_verified"))
         user = user_by_id(pending_id) if pending_id else None
@@ -1171,8 +1177,6 @@ def render_register():
                     st.error("Please enter a valid phone number with country code.")
                 elif not EMAIL_CONFIGURED:
                     st.error("Email verification is not configured. Please contact the administrator.")
-                elif not SMS_CONFIGURED:
-                    st.error("SMS verification is not configured. Please contact the administrator.")
                 else:
                     with st.spinner("Creating secure verification session…"):
                         ok, result = register_user(full_name, email, phone, student_id, password)
@@ -1187,72 +1191,97 @@ def render_register():
                     else:
                         st.error(result)
         else:
-            st.markdown(f'<div class="uh-auth-status ok">Verification started for <strong>{user["email"]}</strong></div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="uh-auth-status ok">Verification started for <strong>{user["email"]}</strong></div>',
+                unsafe_allow_html=True,
+            )
+
             if not email_verified:
-                st.text_input("Email OTP", max_chars=6, placeholder="Enter 6-digit email OTP", key="reg_email_otp")
+                st.text_input(
+                    "Email OTP",
+                    max_chars=6,
+                    placeholder="Enter 6-digit email OTP",
+                    key="reg_email_otp",
+                )
                 if st.button("Verify Email", use_container_width=True, type="primary", key="reg_verify_email"):
                     with st.spinner("Verifying email…"):
-                        ok, msg = verify_otp(user["id"], "EMAIL_VERIFICATION", None, st.session_state.get("reg_email_otp", ""))
+                        ok, msg = verify_otp(
+                            user["id"],
+                            "EMAIL_VERIFICATION",
+                            None,
+                            st.session_state.get("reg_email_otp", ""),
+                        )
                     if ok:
                         st.session_state["registration_email_verified"] = True
                         st.success("Email verified successfully.")
                         st.rerun()
                     else:
-                        st.error("OTP expired. Please request a new one." if "expired" in msg.lower() else "Invalid email OTP. Please try again.")
-                remaining = max(0, int(st.session_state.get("registration_email_resend_at", 0) - time.time()))
-                if st.button("Resend Email OTP", disabled=remaining > 0, use_container_width=True, key="reg_resend_email"):
+                        st.error(
+                            "OTP expired. Please request a new one."
+                            if "expired" in msg.lower()
+                            else "Invalid email OTP. Please try again."
+                        )
+
+                remaining = max(
+                    0,
+                    int(st.session_state.get("registration_email_resend_at", 0) - time.time()),
+                )
+                if st.button(
+                    "Resend Email OTP",
+                    disabled=remaining > 0,
+                    use_container_width=True,
+                    key="reg_resend_email",
+                ):
                     with st.spinner("Sending email OTP…"):
                         ok, msg = _send_registration_email_otp(user["id"])
-                    if ok: st.success(msg); st.rerun()
-                    else: st.error(msg)
-                if remaining: st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="uh-auth-status ok">✓ Email verified</div>', unsafe_allow_html=True)
-                if not st.session_state.get("registration_phone_otp_sent"):
-                    if st.button("Send Mobile OTP", use_container_width=True, type="primary", key="reg_send_phone"):
-                        with st.spinner("Sending secure SMS OTP…"):
-                            ok, msg = _send_registration_sms_otp(user["id"])
-                        if ok:
-                            st.session_state["registration_phone_otp_sent"] = True
-                            st.success(msg)
-                            st.rerun()
-                        else: st.error(msg)
-                else:
-                    st.text_input("Mobile OTP", max_chars=6, placeholder="Enter 6-digit SMS OTP", key="reg_phone_otp")
-                    if st.button("Verify Mobile", use_container_width=True, type="primary", key="reg_verify_phone"):
-                        with st.spinner("Verifying mobile…"):
-                            ok, msg = verify_twilio_sms(user.get("phone") or "", st.session_state.get("reg_phone_otp", ""))
-                        if ok:
-                            st.session_state["registration_phone_verified"] = True
-                            st.success("Mobile verified successfully.")
-                            st.rerun()
-                        else:
-                            st.error("OTP expired. Please request a new one." if "expired" in msg.lower() else "Invalid mobile OTP. Please try again.")
-                    remaining = max(0, int(st.session_state.get("registration_sms_resend_at", 0) - time.time()))
-                    if st.button("Resend Mobile OTP", disabled=remaining > 0, use_container_width=True, key="reg_resend_phone"):
-                        with st.spinner("Sending SMS OTP…"):
-                            ok, msg = _send_registration_sms_otp(user["id"])
-                        if ok: st.success(msg); st.rerun()
-                        else: st.error(msg)
-                    if remaining: st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>', unsafe_allow_html=True)
-                if st.session_state.get("registration_phone_verified"):
-                    st.markdown('<div class="uh-auth-status ok">✓ Email and mobile verified</div>', unsafe_allow_html=True)
-                    if st.button("Create Account", use_container_width=True, type="primary", key="reg_finish"):
-                        with st.spinner("Creating your UNI HELP account…"):
-                            conn = get_conn()
-                            conn.execute("UPDATE users SET verified=1 WHERE id=?", (user["id"],))
-                            conn.commit(); conn.close()
-                        notify(user["id"], "Welcome to UNI HELP! Your email and phone have been verified.")
-                        _clear_registration_state()
-                        st.session_state["auth_mode"] = "Home"
-                        st.success("Account created successfully. Please log in.")
+                    if ok:
+                        st.success(msg)
                         st.rerun()
-        st.markdown('<div class="uh-auth-divider"><span>Already have an account?</span></div>', unsafe_allow_html=True)
+                    else:
+                        st.error(msg)
+                if remaining:
+                    st.markdown(
+                        f'<div class="uh-otp-note">Resend available in {remaining}s</div>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown(
+                    '<div class="uh-auth-status ok">✓ Email verified</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    '<div class="uh-auth-status info">Your email is verified. You can now create your UNI HELP account.</div>',
+                    unsafe_allow_html=True,
+                )
+                if st.button(
+                    "Create Account",
+                    use_container_width=True,
+                    type="primary",
+                    key="reg_finish",
+                ):
+                    with st.spinner("Creating your UNI HELP account…"):
+                        conn = get_conn()
+                        conn.execute("UPDATE users SET verified=1 WHERE id=?", (user["id"],))
+                        conn.commit()
+                        conn.close()
+                    notify(user["id"], "Welcome to UNI HELP! Your email has been verified.")
+                    _clear_registration_state()
+                    st.session_state["auth_mode"] = "Home"
+                    st.success("Account created successfully. Please log in.")
+                    st.rerun()
+
+        st.markdown(
+            '<div class="uh-auth-divider"><span>Already have an account?</span></div>',
+            unsafe_allow_html=True,
+        )
         if st.button("← Back to Login", use_container_width=True, key="register_back"):
             _clear_registration_state()
             st.session_state["auth_mode"] = "Home"
             st.rerun()
-        st.markdown('<div class="uh-auth-mini-row"><span>Your information stays inside UNI HELP</span></div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="uh-auth-mini-row"><span>Your information stays inside UNI HELP</span></div>',
+            unsafe_allow_html=True,
+        )
     _render_auth_shell_end()
 
 
