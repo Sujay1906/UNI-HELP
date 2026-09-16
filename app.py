@@ -15,7 +15,6 @@ import ssl
 import math
 import io
 import time
-import re
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
@@ -23,13 +22,6 @@ import streamlit as st
 from werkzeug.security import generate_password_hash, check_password_hash
 import qrcode
 from dotenv import load_dotenv
-
-try:
-    from twilio.rest import Client as TwilioClient
-    TWILIO_SDK_AVAILABLE = True
-except ImportError:
-    TwilioClient = None
-    TWILIO_SDK_AVAILABLE = False
 
 # =============================================================================
 # 0. CONFIG / ENVIRONMENT
@@ -44,42 +36,21 @@ QR_DIR = os.path.join(UPLOADS_DIR, "qr")
 PHOTOS_DIR = os.path.join(UPLOADS_DIR, "photos")
 
 UNIVERSITY_EMAIL_DOMAIN = os.getenv("UNIVERSITY_EMAIL_DOMAIN", "@student.university.edu")
-OTP_EXPIRY_MINUTES = 5
+OTP_EXPIRY_MINUTES = int(os.getenv("OTP_EXPIRY_MINUTES", "5"))
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 LOCATION_RADIUS_METERS = float(os.getenv("LOCATION_RADIUS_METERS", "100"))
 QR_EXPIRY_MINUTES = int(os.getenv("QR_EXPIRY_MINUTES", "30"))
 SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_hex(16))
 
-# SMTP credentials are intentionally loaded from Streamlit Secrets.
-# No SMTP credential is hardcoded in the application.
-try:
-    SMTP_HOST = str(st.secrets.get("SMTP_HOST", "smtp.gmail.com")).strip()
-    SMTP_PORT = int(st.secrets.get("SMTP_PORT", 587))
-    SMTP_USERNAME = str(st.secrets.get("SMTP_USERNAME", "")).strip()
-    SMTP_PASSWORD = str(st.secrets.get("SMTP_PASSWORD", "")).strip()
-except Exception:
-    SMTP_HOST = "smtp.gmail.com"
-    SMTP_PORT = 587
-    SMTP_USERNAME = ""
-    SMTP_PASSWORD = ""
+SMTP_EMAIL = os.getenv("SMTP_EMAIL", "").strip()
+SMTP_APP_PASSWORD = os.getenv("SMTP_APP_PASSWORD", "").strip()
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 
-EMAIL_CONFIGURED = bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSWORD)
-
-try:
-    TWILIO_ACCOUNT_SID = str(st.secrets.get("TWILIO_ACCOUNT_SID", "")).strip()
-    TWILIO_AUTH_TOKEN = str(st.secrets.get("TWILIO_AUTH_TOKEN", "")).strip()
-    TWILIO_VERIFY_SERVICE_SID = str(st.secrets.get("TWILIO_VERIFY_SERVICE_SID", "")).strip()
-except Exception:
-    TWILIO_ACCOUNT_SID = ""
-    TWILIO_AUTH_TOKEN = ""
-    TWILIO_VERIFY_SERVICE_SID = ""
-SMS_CONFIGURED = bool(
-    TWILIO_SDK_AVAILABLE
-    and TWILIO_ACCOUNT_SID
-    and TWILIO_AUTH_TOKEN
-    and TWILIO_VERIFY_SERVICE_SID
-)
-SMS_RESEND_SECONDS = 30
+# Email is only "live" if both credentials are configured. Otherwise the whole
+# app runs in DEMO MODE for anything that would otherwise require an external
+# service (email delivery, real GPS). This is intentional and always labeled.
+EMAIL_CONFIGURED = bool(SMTP_EMAIL and SMTP_APP_PASSWORD)
 
 MIN_REWARD = float(os.getenv("MIN_REWARD", "0"))
 MAX_REWARD = float(os.getenv("MAX_REWARD", "5000"))
@@ -189,7 +160,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     category TEXT,
     status TEXT NOT NULL DEFAULT 'CREATED',
     created_at TEXT NOT NULL,
-    completed_at TEXT
+    accepted_at TEXT,
+    completed_at TEXT,
+    task_code TEXT UNIQUE,
+    admin_otp_bypass INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS transactions (
@@ -301,17 +275,19 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_r
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
-    user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-    if "profile_photo_path" not in user_columns:
-        conn.execute("ALTER TABLE users ADD COLUMN profile_photo_path TEXT")
-
-    # Backward-compatible migration for existing UNI HELP databases.
-    # Older databases did not have tasks.accepted_at; adding it lets us keep
-    # the active-task experience without replacing or resetting existing data.
-    task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
-    if "accepted_at" not in task_columns:
+    # Backward-compatible task enhancements; never reset existing data.
+    task_cols = {r[1] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+    if "task_code" not in task_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN task_code TEXT")
+    if "accepted_at" not in task_cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN accepted_at TEXT")
-
+    if "admin_otp_bypass" not in task_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN admin_otp_bypass INTEGER NOT NULL DEFAULT 0")
+    # Populate short unique IDs for existing tasks.
+    rows = conn.execute("SELECT id FROM tasks WHERE task_code IS NULL OR task_code =  ORDER BY id").fetchall()
+    for row in rows:
+        conn.execute("UPDATE tasks SET task_code=? WHERE id=?", (f"UNIH{row[0]:04d}", row[0]))
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_task_code ON tasks(task_code)")
     conn.commit()
     # Create a default admin account if none exists (demo convenience only).
     cur = conn.execute("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
@@ -426,42 +402,42 @@ def verify_otp(user_id, purpose, reference_id, submitted_otp):
 
 
 def send_email(to_email, subject, body):
-    """Send an email through the configured SMTP server using STARTTLS."""
+    """Attempts real Gmail SMTP delivery. Returns True if actually sent."""
     if not EMAIL_CONFIGURED:
         return False
     try:
-        msg = MIMEText(body, "plain", "utf-8")
+        msg = MIMEText(body)
         msg["Subject"] = subject
-        msg["From"] = SMTP_USERNAME
+        msg["From"] = SMTP_EMAIL
         msg["To"] = to_email
         context = ssl.create_default_context()
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.ehlo()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.sendmail(SMTP_USERNAME, [to_email], msg.as_string())
-        st.session_state.pop("_last_email_error", None)
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context) as server:
+            server.login(SMTP_EMAIL, SMTP_APP_PASSWORD)
+            server.sendmail(SMTP_EMAIL, [to_email], msg.as_string())
         return True
     except Exception as e:
-        # Keep technical SMTP details away from normal users. Admins can see
-        # the configuration status from the Admin Dashboard.
         st.session_state["_last_email_error"] = str(e)
         return False
 
 
 def deliver_otp(user_row, purpose, reference_id, context_label=""):
-    """Generate and email a real OTP. Never expose the OTP in the UI."""
+    """Generates an OTP and either emails it (live mode) or displays it
+    clearly labeled as DEMO ONLY. Never mixes the two silently."""
     otp_plain = create_otp(user_row["id"], purpose, reference_id)
-    subject = f"UNI HELP - Your {purpose.replace('_', ' ').title()} Code"
+    subject = f"UNI HELP - Your {purpose.replace('_',' ').title()} Code"
     body = (
         f"Hi {user_row['full_name']},\n\n"
         f"Your verification code for {context_label or purpose} is: {otp_plain}\n"
         f"This code expires in {OTP_EXPIRY_MINUTES} minutes.\n\n"
-        f"If you did not request this, ignore this email.\n\n- UNI HELP"
+        f"If you did not request this, ignore this email.\n- UNI HELP"
     )
     sent = send_email(user_row["email"], subject, body)
-    return sent
+    if sent:
+        st.success(f"📧 A verification code was emailed to {user_row['email']}.")
+    else:
+        st.warning("🧪 DEMO MODE — Email not configured. Showing code directly (never do this in production):")
+        st.code(otp_plain, language=None)
+    return otp_plain if not sent else None
 
 
 def create_qr_token(reference_type, reference_id, purpose):
@@ -694,127 +670,47 @@ def refresh_current_user():
 # 4. AUTH
 # =============================================================================
 
-def is_valid_email(email):
-    """Lightweight validation for any normal email address."""
-    return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email.strip()))
+def register_user(full_name, email, phone, student_id, password):
+    email = email.strip().lower()
+    if not full_name.strip():
+        return False, "Full name is required."
+    if not email.endswith(UNIVERSITY_EMAIL_DOMAIN.lower()):
+        return False, f"Email must be a university address ending with {UNIVERSITY_EMAIL_DOMAIN}"
+    if len(password) < 6:
+        return False, "Password must be at least 6 characters."
+    if user_by_email(email):
+        return False, "An account with this email already exists."
+
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO users (full_name, email, phone, student_id, password_hash, role,
+            verified, trust_score, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (full_name.strip(), email, phone.strip(), student_id.strip(),
+         hash_password(password), "student", 0, 50, now_iso()),
+    )
+    new_id = conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]
+    conn.commit()
+    conn.close()
+
+    user_row = user_by_id(new_id)
+    deliver_otp(user_row, "EMAIL_VERIFICATION", None, "email verification")
+    notify(new_id, "Welcome to UNI HELP! Please verify your email to unlock all features.")
+    return True, new_id
 
 
-def normalize_phone(phone):
-    raw = phone.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-    if raw.startswith("+") and raw[1:].isdigit() and 10 <= len(raw[1:]) <= 15: return raw
-    if raw.isdigit() and len(raw) == 10: return "+91" + raw
-    return ""
+def login_user(email, password):
+    row = user_by_email(email.strip().lower())
+    if row is None:
+        return False, "No account found with that email."
+    if not verify_password(password, row["password_hash"]):
+        return False, "Incorrect password."
+    if row["is_suspended"]:
+        return False, "This account has been suspended. Contact an administrator."
+    return True, dict(row)
 
 
-def is_valid_phone(phone):
-    """Registration accepts a plain 10-digit Indian mobile number; country code is added internally for providers."""
-    raw = str(phone or "").strip()
-    return bool(re.fullmatch(r"\d{10}", raw))
-
-
-def is_valid_student_id(student_id):
-    """UNI HELP student IDs are exactly 8 digits and start with the common 126 prefix."""
-    return bool(re.fullmatch(r"126\d{5}", str(student_id or "").strip()))
-
-
-def _twilio_verify_client():
-    """Return the configured Twilio Verify client without exposing secrets."""
-    if not SMS_CONFIGURED:
-        return None
-    return TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-
-
-def send_twilio_verify_sms(to_phone):
-    """Start a real Twilio Verify SMS verification. No OTP is generated or stored locally."""
-    if not SMS_CONFIGURED:
-        st.session_state["_last_sms_error"] = "Twilio Verify is not configured."
-        return False
-    phone = normalize_phone(to_phone)
-    if not phone:
-        st.session_state["_last_sms_error"] = "Invalid phone number."
-        return False
-    try:
-        client = _twilio_verify_client()
-        verification = (
-            client.verify.v2
-            .services(TWILIO_VERIFY_SERVICE_SID)
-            .verifications.create(to=phone, channel="sms")
-        )
-        return getattr(verification, "status", "") in {"pending", "approved"}
-    except Exception as exc:
-        # Keep provider details server-side; never surface credentials or raw API responses.
-        st.session_state["_last_sms_error"] = str(exc)
-        return False
-
-
-def verify_twilio_sms(to_phone, code):
-    """Check a user-entered code against Twilio Verify."""
-    if not SMS_CONFIGURED:
-        return False, "SMS verification is not configured. Please contact the administrator."
-    phone = normalize_phone(to_phone)
-    code = str(code or "").strip()
-    if not phone:
-        return False, "No valid mobile number is registered."
-    if not re.fullmatch(r"\d{6}", code):
-        return False, "Please enter the 6-digit OTP."
-    try:
-        client = _twilio_verify_client()
-        check = (
-            client.verify.v2
-            .services(TWILIO_VERIFY_SERVICE_SID)
-            .verification_checks.create(to=phone, code=code)
-        )
-        status = getattr(check, "status", "")
-        if status == "approved":
-            return True, "Verified successfully."
-        if status == "pending":
-            return False, "Invalid OTP. Please try again."
-        return False, "OTP verification failed. Please request a new OTP."
-    except Exception as exc:
-        st.session_state["_last_sms_error"] = str(exc)
-        return False, "Unable to verify OTP. Please try again."
-
-
-def deliver_sms_otp(user_row, purpose, reference_id=None, context_label="verification"):
-    """Start a Twilio Verify SMS challenge. Twilio owns OTP generation, expiry and verification."""
-    return send_twilio_verify_sms(user_row.get("phone") or "")
-
-
-def register_user(full_name,email,phone,student_id,password):
-    email=email.strip().lower(); phone=normalize_phone(phone); student_id=student_id.strip()
-    if not full_name.strip(): return False,"Full name is required."
-    if not is_valid_email(email): return False,"Please enter a valid email address."
-    if not phone: return False,"Please enter a valid 10-digit mobile number."
-    if not is_valid_student_id(student_id): return False,"Student ID must be exactly 8 digits and start with 126."
-    if len(password)<6: return False,"Password must be at least 6 characters."
-    if user_by_email(email): return False,"An account with this email already exists."
-    conn=get_conn()
-    if conn.execute("SELECT id FROM users WHERE student_id=?",(student_id,)).fetchone(): conn.close(); return False,"An account with this Student ID already exists."
-    conn.execute("INSERT INTO users (full_name,email,phone,student_id,password_hash,role,verified,trust_score,created_at) VALUES (?,?,?,?,?,?,?,?,?)",(full_name.strip(),email,phone,student_id,hash_password(password),"student",0,50,now_iso()))
-    new_id=conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]; conn.commit(); conn.close(); return True,new_id
-
-
-def user_by_student_id(student_id):
-    conn=get_conn(); row=conn.execute("SELECT * FROM users WHERE student_id=?",(student_id.strip(),)).fetchone(); conn.close(); return row
-
-
-def authenticate_student_credentials(student_id,password):
-    row=user_by_student_id(student_id)
-    if row is None: return False,"No account found with that Student ID."
-    if not verify_password(password,row["password_hash"]): return False,"Incorrect password."
-    if row["is_suspended"]: return False,"This account has been suspended. Contact an administrator."
-    if not row["verified"]: return False,"Please complete email verification before logging in."
-    return True,dict(row)
-
-
-def login_user(email,password):
-    row=user_by_email(email.strip().lower())
-    if row is None: return False,"No account found with that email."
-    if not verify_password(password,row["password_hash"]): return False,"Incorrect password."
-    if row["is_suspended"]: return False,"This account has been suspended. Contact an administrator."
-    return True,dict(row)
-
-
+# =============================================================================
 # 5. DEMO DATA SEEDING
 # =============================================================================
 
@@ -907,355 +803,25 @@ st.set_page_config(page_title="UNI HELP", page_icon="🎓", layout="wide")
 
 CUSTOM_CSS = """
 <style>
-:root{
-  --uh-navy:#081a3a; --uh-blue:#2563eb; --uh-blue2:#60a5fa; --uh-cyan:#22d3ee;
-  --uh-orange:#f97316; --uh-bg:#f4f8ff; --uh-text:#0f1f3d; --uh-muted:#64748b;
-  --uh-line:#dbe5f2; --uh-card:rgba(255,255,255,.92)
+.uh-hero {
+    background: linear-gradient(135deg, #1550ff 0%, #3b7dfb 100%);
+    padding: 3rem 2rem; border-radius: 18px; color: white; text-align: center;
+    margin-bottom: 1.5rem;
 }
-.stApp:has(.uh-auth-shell){
-  background:
-    radial-gradient(circle at 8% 12%,rgba(37,99,235,.13),transparent 24%),
-    radial-gradient(circle at 88% 18%,rgba(34,211,238,.10),transparent 21%),
-    radial-gradient(circle at 82% 92%,rgba(249,115,22,.08),transparent 24%),
-    linear-gradient(135deg,#f8fbff 0%,#f3f7fd 48%,#eef5ff 100%);
+.uh-hero h1 { font-size: 2.6rem; margin-bottom: 0.2rem; }
+.uh-hero p { font-size: 1.15rem; opacity: 0.95; }
+.uh-card {
+    background: white; border: 1px solid #e6e9f0; border-radius: 14px;
+    padding: 1.2rem; box-shadow: 0 1px 4px rgba(20,30,60,0.06); margin-bottom: 0.8rem;
 }
-.uh-auth-shell{min-height:calc(100dvh - 1rem);display:flex;align-items:center;justify-content:center;padding:.45rem .8rem;box-sizing:border-box;overflow:hidden;position:relative}
-.uh-auth-shell:before,.uh-auth-shell:after{content:"";position:absolute;border-radius:999px;filter:blur(2px);pointer-events:none;animation:uhFloat 7s ease-in-out infinite}
-.uh-auth-shell:before{width:190px;height:190px;left:-75px;top:11%;background:radial-gradient(circle,rgba(37,99,235,.16),transparent 68%)}
-.uh-auth-shell:after{width:230px;height:230px;right:-90px;bottom:5%;background:radial-gradient(circle,rgba(249,115,22,.12),transparent 68%);animation-delay:-3s}
-.uh-auth-content{width:min(100%,460px);margin:auto;position:relative;z-index:1}
-.uh-auth-hero{text-align:center;margin:0 auto .6rem;animation:uhFadeUp .55s cubic-bezier(.22,1,.36,1) both}
-.uh-auth-logo-wrap{position:relative;width:62px;height:62px;margin:0 auto .45rem}
-.uh-auth-logo-ring{position:absolute;inset:-5px;border-radius:20px;background:linear-gradient(135deg,rgba(37,99,235,.13),rgba(96,165,250,.03));animation:uhPulse 2.8s ease-in-out infinite}
-.uh-auth-logo-mark{position:relative;width:62px;height:62px;border-radius:20px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#ffffff,#edf4ff);border:1px solid #d6e3f4;box-shadow:0 14px 32px rgba(8,26,58,.12),inset 0 1px 0 #fff;font-size:1.7rem}
-.uh-auth-kicker{display:inline-flex;align-items:center;gap:.35rem;padding:.23rem .52rem;border-radius:999px;background:rgba(255,255,255,.75);border:1px solid #dfe8f3;color:#31507d;font-size:.6rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;margin-bottom:.34rem;box-shadow:0 4px 12px rgba(8,26,58,.04)}
-.uh-auth-kicker-dot{width:6px;height:6px;border-radius:999px;background:linear-gradient(135deg,#22c55e,#16a34a);box-shadow:0 0 0 4px rgba(34,197,94,.10)}
-.uh-auth-hero h1{color:var(--uh-navy)!important;font-size:2.2rem!important;line-height:1!important;margin:0!important;letter-spacing:-.06em;font-weight:900}
-.uh-auth-tagline{color:#23385b!important;font-size:.94rem;line-height:1.28;margin:.36rem 0 .15rem;font-weight:700}
-.uh-auth-subtitle{color:#6b7d97!important;font-size:.72rem;margin:0;letter-spacing:.08em;font-weight:700}
-.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{position:relative;background:var(--uh-card)!important;border:1px solid rgba(214,226,241,.92)!important;border-radius:24px!important;box-shadow:0 26px 60px rgba(8,26,58,.12),0 6px 18px rgba(8,26,58,.05)!important;backdrop-filter:blur(18px);padding:1rem!important;animation:uhCardIn .6s .06s cubic-bezier(.22,1,.36,1) both;overflow:hidden}
-.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]:before{content:"";position:absolute;left:-10%;right:-10%;top:-45%;height:70%;background:radial-gradient(circle at 50% 75%,rgba(37,99,235,.075),transparent 58%);pointer-events:none}
-.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]>div{position:relative;z-index:1}
-.uh-auth-tabs{display:grid;grid-template-columns:1fr 1fr;gap:.25rem;background:#edf3fa;border:1px solid #dde7f3;border-radius:13px;padding:.23rem;margin-bottom:.72rem}
-.uh-auth-tab-button button{border:0!important;background:transparent!important;color:#71819a!important;box-shadow:none!important;min-height:38px!important;border-radius:10px!important;font-size:.75rem!important;font-weight:850!important;letter-spacing:.04em;transition:all .18s ease!important}
-.uh-auth-tab-button-active button{background:linear-gradient(135deg,#fff,#f8fbff)!important;color:var(--uh-navy)!important;box-shadow:0 6px 14px rgba(8,26,58,.08),inset 0 0 0 1px #e4ebf4!important}
-.uh-auth-card-title{color:var(--uh-navy);font-size:1.2rem;font-weight:850;margin:.12rem 0 .1rem;letter-spacing:-.02em}
-.uh-auth-card-copy{color:#61728b!important;font-size:.75rem!important;margin:0 0 .72rem!important}
-.uh-auth-demo{margin:.55rem 0 0;padding:.45rem .62rem;border-radius:10px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412!important;font-size:.68rem;text-align:center}
-.uh-auth-divider{display:flex;align-items:center;gap:.55rem;color:#94a3b8;font-size:.67rem;margin:.62rem 0}.uh-auth-divider:before,.uh-auth-divider:after{content:"";height:1px;flex:1;background:linear-gradient(90deg,transparent,#dbe5f2,transparent)}
-.uh-otp-note{text-align:center;padding:.42rem .6rem;background:linear-gradient(135deg,#eff6ff,#f5f9ff);border:1px solid #c9dcfb;color:#1e40af!important;border-radius:10px;font-size:.69rem;margin:.35rem 0 .5rem}
-.uh-auth-status{padding:.5rem .62rem;border-radius:10px;font-size:.7rem;font-weight:700;margin:.35rem 0;background:#f8fbff;border:1px solid #dce8f6;color:#375273}.uh-auth-status.ok{background:#ecfdf5;color:#047857;border-color:#a7f3d0}.uh-auth-status.err{background:#fff1f2;color:#be123c;border-color:#fecdd3}
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label,.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] label p{color:#30425f!important;font-weight:750!important;font-size:.7rem!important}
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{border:1px solid #c8d4e3!important;border-radius:11px!important;background:rgba(255,255,255,.96)!important;color:#0f172a!important;min-height:40px!important;box-shadow:inset 0 1px 1px rgba(8,26,58,.02)!important;font-size:.83rem!important;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease!important}
-.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input:focus{border-color:#5b8def!important;box-shadow:0 0 0 3px rgba(37,99,235,.11),0 5px 14px rgba(37,99,235,.06)!important;transform:translateY(-1px)}
-.stApp:has(.uh-auth-shell) button{border-radius:11px!important;min-height:40px!important;font-weight:800!important;transition:transform .16s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease!important}
-.stApp:has(.uh-auth-shell) button:hover{transform:translateY(-2px)}
-.stApp:has(.uh-auth-shell) button:active{transform:translateY(0) scale(.985)}
-.stApp:has(.uh-auth-shell) button[kind="primary"]{background:linear-gradient(135deg,#2563eb 0%,#4f7cff 62%,#60a5fa 100%)!important;color:#fff!important;border:0!important;box-shadow:0 10px 20px rgba(37,99,235,.20)!important;position:relative;overflow:hidden}
-.stApp:has(.uh-auth-shell) button[kind="primary"]:after{content:"";position:absolute;top:-40%;left:-30%;width:30%;height:180%;transform:rotate(18deg);background:linear-gradient(90deg,transparent,rgba(255,255,255,.32),transparent);animation:uhShimmer 3.2s linear infinite}
-.uh-auth-secondary button{background:#fff!important;color:var(--uh-navy)!important;border:1px solid #cbd8e7!important;box-shadow:0 4px 10px rgba(8,26,58,.03)!important}
-.uh-auth-secondary button:hover{border-color:#8eb6fb!important;box-shadow:0 7px 15px rgba(8,26,58,.07)!important}
-.uh-auth-create button,.uh-auth-back button{background:transparent!important;color:#2563eb!important;border:0!important;box-shadow:none!important}
-.uh-auth-back button{color:#64748b!important}
-.uh-auth-mini-row{display:flex;justify-content:center;align-items:center;gap:.38rem;color:#8a99ad;font-size:.63rem;margin-top:.46rem}
-.uh-auth-mini-row b{color:#526782}
-@keyframes uhFadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
-@keyframes uhCardIn{from{opacity:0;transform:translateY(16px) scale(.985)}to{opacity:1;transform:none}}
-@keyframes uhFloat{0%,100%{transform:translate3d(0,0,0)}50%{transform:translate3d(10px,-12px,0)}}
-@keyframes uhPulse{0%,100%{transform:scale(.98);opacity:.9}50%{transform:scale(1.05);opacity:1}}
-@keyframes uhShimmer{0%{left:-35%}55%,100%{left:120%}}
-@media(max-width:640px){.uh-auth-shell{min-height:100dvh;padding:.35rem .45rem;overflow:visible}.uh-auth-content{width:min(100%,410px)}.uh-auth-hero{margin-bottom:.48rem}.uh-auth-logo-wrap,.uh-auth-logo-mark{width:52px;height:52px}.uh-auth-logo-mark{border-radius:17px;font-size:1.4rem}.uh-auth-hero h1{font-size:1.9rem!important}.uh-auth-tagline{font-size:.82rem}.uh-auth-subtitle{font-size:.66rem}.stApp:has(.uh-auth-shell) [data-testid="stVerticalBlockBorderWrapper"]{padding:.78rem!important;border-radius:19px!important}.stApp:has(.uh-auth-shell) div[data-testid="stTextInput"] input{min-height:40px!important}.stApp:has(.uh-auth-shell) button{min-height:41px!important}.uh-auth-shell:before{left:-110px}.uh-auth-shell:after{right:-120px}}
-
-/* Student dashboard / profile polish */
-.uh-app-context{display:flex;align-items:baseline;gap:.7rem;margin:.1rem 0 .8rem;color:#0b1f44;font-weight:900;letter-spacing:-.02em}.uh-app-context span{font-size:.9rem}.uh-app-context small{font-size:.7rem;color:#71819a;font-weight:700}.uh-side-label{font-size:.63rem;letter-spacing:.12em;font-weight:850;color:#8b9ab0;margin:.7rem 0 .25rem}.uh-side-current{padding:.55rem .7rem;border-radius:10px;background:#eaf2ff;color:#174ea6;font-weight:800;font-size:.82rem}.uh-dashboard-hero{display:flex;justify-content:space-between;align-items:center;gap:1.5rem;padding:1.15rem 1.35rem;border-radius:22px;background:linear-gradient(135deg,#0a1d42 0%,#123d80 62%,#2563eb 100%);box-shadow:0 18px 42px rgba(8,26,58,.16);margin-bottom:1rem;overflow:hidden;position:relative}.uh-dashboard-hero:after{content:"";position:absolute;width:260px;height:260px;border-radius:50%;right:-100px;top:-150px;background:rgba(255,255,255,.09)}.uh-dashboard-eyebrow{font-size:.6rem;letter-spacing:.14em;color:#9fc4ff;font-weight:850;margin-bottom:.35rem}.uh-dashboard-hero h1{color:#fff!important;margin:0!important;font-size:1.7rem!important;letter-spacing:-.04em}.uh-dashboard-hero p{color:#dbeafe!important;margin:.3rem 0 0;font-size:.76rem}.uh-dashboard-trust{min-width:125px;position:relative;z-index:1;color:#fff;text-align:right}.uh-dashboard-trust span{display:block;font-size:.63rem;color:#bfdbfe}.uh-dashboard-trust strong{display:block;font-size:1.45rem}.uh-progress{height:5px;background:rgba(255,255,255,.18);border-radius:99px;margin-top:.35rem;overflow:hidden}.uh-progress i{display:block;height:100%;background:#fb923c;border-radius:99px}.uh-stat-card{display:flex;align-items:center;gap:.7rem;background:#fff;border:1px solid #e2eaf4;border-radius:17px;padding:.75rem .8rem;box-shadow:0 8px 22px rgba(8,26,58,.055);min-height:70px}.uh-stat-icon,.uh-action-icon,.uh-info-icon{width:38px;height:38px;border-radius:12px;display:flex;align-items:center;justify-content:center;background:#edf4ff;font-size:1.05rem;flex:none}.uh-stat-card span,.uh-info-card span{display:block;color:#7a8aa1;font-size:.62rem;font-weight:750}.uh-stat-card strong{display:block;color:#0b1f44;font-size:1.08rem;margin-top:.08rem}.uh-section-heading{display:flex;justify-content:space-between;align-items:end;margin:1.25rem 0 .7rem}.uh-section-heading span,.uh-page-kicker{font-size:.58rem;letter-spacing:.13em;color:#2563eb;font-weight:900}.uh-section-heading h2{font-size:1.05rem!important;color:#10274e!important;margin:.12rem 0 0!important}.uh-section-space{margin-top:1.15rem}.uh-action-card{height:112px;padding:.85rem;border:1px solid #e1e9f3;border-radius:17px;background:linear-gradient(180deg,#fff,#f9fbff);box-shadow:0 8px 22px rgba(8,26,58,.045);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}.uh-action-card:hover{transform:translateY(-3px);box-shadow:0 14px 28px rgba(8,26,58,.09);border-color:#bfd5f7}.uh-action-icon{width:32px;height:32px;border-radius:10px}.uh-action-card h3{font-size:.85rem!important;color:#10274e!important;margin:.35rem 0 .08rem!important}.uh-action-card p{font-size:.64rem;color:#71819a!important;margin:0!important}.uh-info-card{display:flex;gap:.8rem;align-items:center;padding:.85rem 1rem;border:1px solid #e1e9f3;border-radius:17px;background:#fff;box-shadow:0 8px 22px rgba(8,26,58,.045)}.uh-info-icon{background:#fff3ea}.uh-info-card strong{display:block;color:#10274e;font-size:1.12rem}.uh-info-card p{font-size:.63rem;color:#7a8aa1;margin:.12rem 0 0}.uh-soft-alert{margin-top:1rem;padding:.7rem .85rem;border:1px solid #bfdbfe;background:#eff6ff;border-radius:13px;color:#1e40af;font-size:.7rem}.uh-profile-photo-placeholder{width:150px;height:150px;border-radius:28px;background:linear-gradient(135deg,#0a1d42,#2563eb);color:#fff;display:flex;align-items:center;justify-content:center;font-size:2.4rem;font-weight:900;box-shadow:0 16px 34px rgba(8,26,58,.15)}.uh-profile-main-card{padding:1rem 1.1rem;border-radius:18px;border:1px solid #e0e8f2;background:#fff;box-shadow:0 10px 25px rgba(8,26,58,.05)}.uh-profile-name{font-size:1.35rem;font-weight:900;color:#0b1f44}.uh-profile-id{font-size:.72rem;color:#71819a;margin-top:.2rem}.uh-profile-badges{display:flex;gap:.45rem;margin-top:.65rem;flex-wrap:wrap}.uh-profile-badge{padding:.25rem .55rem;border-radius:999px;font-size:.62rem;font-weight:850}.uh-profile-badge.green{background:#dcfce7;color:#166534}.uh-profile-badge.blue{background:#eaf2ff;color:#174ea6}.uh-detail-card{padding:.7rem .8rem;border:1px solid #e2eaf4;background:#fff;border-radius:13px;margin-bottom:.55rem}.uh-detail-card span{display:block;color:#7a8aa1;font-size:.6rem;font-weight:750}.uh-detail-card strong{display:block;color:#10274e;font-size:.78rem;margin-top:.12rem}@media(max-width:760px){.uh-dashboard-hero{padding:1rem;display:block}.uh-dashboard-hero h1{font-size:1.4rem!important}.uh-dashboard-trust{text-align:left;margin-top:.8rem}.uh-stat-card{min-height:62px;padding:.6rem}.uh-action-card{height:105px}.uh-profile-photo-placeholder{width:110px;height:110px;border-radius:22px;font-size:1.8rem}}
-
-/* Premium admin control center */
-.uh-admin-shell{background:linear-gradient(135deg,#f7faff 0%,#eef5ff 55%,#fff8f1 100%);border:1px solid #e1e9f4;border-radius:24px;padding:1.15rem 1.25rem;margin-bottom:1rem;box-shadow:0 14px 38px rgba(8,26,58,.07)}
-.uh-admin-eyebrow{font-size:.58rem;letter-spacing:.16em;color:#2563eb;font-weight:900;text-transform:uppercase}
-.uh-admin-title{font-size:1.65rem;font-weight:900;color:#081a3a;letter-spacing:-.04em;margin:.15rem 0 .15rem}
-.uh-admin-subtitle{font-size:.73rem;color:#64748b;margin:0}
-.uh-admin-online{display:inline-flex;align-items:center;gap:.35rem;padding:.34rem .55rem;border-radius:999px;background:#ecfdf5;color:#047857;border:1px solid #bbf7d0;font-size:.62rem;font-weight:850}
-.uh-admin-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.10)}
-.uh-admin-metric{height:100%;min-height:92px;padding:.9rem 1rem;border:1px solid #e0e8f2;border-radius:17px;background:#fff;box-shadow:0 8px 22px rgba(8,26,58,.05);transition:transform .18s ease,box-shadow .18s ease}
-.uh-admin-metric:hover{transform:translateY(-2px);box-shadow:0 13px 28px rgba(8,26,58,.08)}
-.uh-admin-metric .icon{font-size:1.05rem;margin-bottom:.35rem}.uh-admin-metric .label{font-size:.62rem;color:#71819a;font-weight:750}.uh-admin-metric .value{font-size:1.35rem;color:#0b1f44;font-weight:900;line-height:1.05;margin-top:.12rem}.uh-admin-metric .hint{font-size:.57rem;color:#94a3b8;margin-top:.2rem}
-.uh-admin-section{font-size:1rem;font-weight:900;color:#10274e;margin:1rem 0 .55rem}
-.uh-admin-panel{padding:.85rem 1rem;border:1px solid #e1e9f3;border-radius:17px;background:#fff;box-shadow:0 8px 22px rgba(8,26,58,.045)}
-.uh-admin-panel-title{font-size:.78rem;font-weight:900;color:#10274e;margin-bottom:.25rem}.uh-admin-panel-copy{font-size:.64rem;color:#71819a}
-.uh-admin-alert{display:flex;align-items:center;gap:.65rem;padding:.7rem .8rem;border-radius:13px;border:1px solid #fed7aa;background:#fff7ed;color:#9a3412;font-size:.68rem;font-weight:750;margin-bottom:.5rem}.uh-admin-alert strong{display:block;color:#7c2d12;font-size:.78rem}.uh-admin-alert small{display:block;font-size:.6rem;color:#9a3412;font-weight:650}
-.uh-admin-activity{display:flex;gap:.65rem;align-items:flex-start;padding:.65rem 0;border-bottom:1px solid #eef2f7}.uh-admin-activity:last-child{border-bottom:0}.uh-admin-activity-icon{width:30px;height:30px;border-radius:10px;background:#edf4ff;display:flex;align-items:center;justify-content:center;flex:none}.uh-admin-activity strong{display:block;font-size:.68rem;color:#10274e}.uh-admin-activity span{display:block;font-size:.58rem;color:#8a99ad;margin-top:.12rem}
-.uh-admin-search{padding:.9rem;border-radius:17px;background:linear-gradient(135deg,#0b1f44,#174ea6);box-shadow:0 12px 28px rgba(23,78,166,.14);margin-bottom:.8rem}.uh-admin-search h3{color:#fff!important;font-size:.92rem!important;margin:0 0 .12rem!important}.uh-admin-search p{color:#bfdbfe!important;font-size:.62rem!important;margin:0 0 .6rem!important}
-.uh-admin-statline{height:7px;background:#edf2f7;border-radius:99px;overflow:hidden;margin-top:.45rem}.uh-admin-statline i{display:block;height:100%;background:linear-gradient(90deg,#2563eb,#60a5fa);border-radius:99px}
-@media(max-width:760px){.uh-admin-shell{padding:.9rem;border-radius:18px}.uh-admin-title{font-size:1.35rem}.uh-admin-metric{min-height:80px;padding:.7rem}.uh-admin-metric .value{font-size:1.15rem}}
-
-.uh-student-shell{display:block}
-
-/* =====================================================================
-   UNI HELP — GLASS / GLOSSY STUDENT APP THEME
-   Keeps the existing Streamlit widgets and backend intact while making
-   the student experience feel like a real mobile-first product.
-   ===================================================================== */
-.stApp:has(.uh-student-shell){
-  --uh-app-bg:#eef5ff;
-  --uh-app-bg-2:#f8fbff;
-  --uh-ink:#10264a;
-  --uh-ink-soft:#526784;
-  --uh-border:rgba(255,255,255,.72);
-  background:
-    radial-gradient(circle at 8% 8%,rgba(37,99,235,.16),transparent 25%),
-    radial-gradient(circle at 92% 18%,rgba(34,211,238,.12),transparent 24%),
-    radial-gradient(circle at 80% 90%,rgba(96,165,250,.13),transparent 27%),
-    linear-gradient(145deg,var(--uh-app-bg-2) 0%,var(--uh-app-bg) 52%,#edf4ff 100%)!important;
-  color:var(--uh-ink)!important;
+.uh-badge { padding: 3px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+.uh-metric { text-align:center; padding: 0.6rem; }
+.uh-demo-banner {
+    background: #fff4e5; border: 1px solid #ffb800; color: #7a4b00;
+    padding: 0.6rem 1rem; border-radius: 10px; font-weight: 600; margin-bottom: 1rem;
 }
-.stApp:has(.uh-student-shell) .main{
-  background:transparent!important;
-}
-.stApp:has(.uh-student-shell) .main .block-container{
-  position:relative;
-  max-width:720px!important;
-  padding:18px 20px 105px!important;
-  margin:0 auto!important;
-}
-.stApp:has(.uh-student-shell) .main .block-container:before,
-.stApp:has(.uh-student-shell) .main .block-container:after{
-  content:"";
-  position:fixed;
-  width:220px;height:220px;border-radius:50%;
-  pointer-events:none;z-index:-1;filter:blur(4px);
-  animation:uhAmbient 9s ease-in-out infinite;
-}
-.stApp:has(.uh-student-shell) .main .block-container:before{
-  left:-90px;top:18%;
-  background:radial-gradient(circle,rgba(37,99,235,.13),transparent 68%);
-}
-.stApp:has(.uh-student-shell) .main .block-container:after{
-  right:-100px;bottom:12%;
-  background:radial-gradient(circle,rgba(34,211,238,.10),transparent 68%);
-  animation-delay:-4s;
-}
-
-/* Native Streamlit text: force readable contrast regardless of the
-   selected Streamlit Cloud theme. */
-.stApp:has(.uh-student-shell) .stMarkdown,
-.stApp:has(.uh-student-shell) .stMarkdown p,
-.stApp:has(.uh-student-shell) label,
-.stApp:has(.uh-student-shell) label p,
-.stApp:has(.uh-student-shell) [data-testid="stCaptionContainer"]{
-  color:var(--uh-ink)!important;
-}
-.stApp:has(.uh-student-shell) h1,
-.stApp:has(.uh-student-shell) h2,
-.stApp:has(.uh-student-shell) h3,
-.stApp:has(.uh-student-shell) h4{
-  color:var(--uh-ink)!important;
-}
-.stApp:has(.uh-student-shell) [data-testid="stWidgetLabel"] p,
-.stApp:has(.uh-student-shell) [data-testid="stWidgetLabel"] label{
-  color:#344b6d!important;
-  font-weight:800!important;
-}
-
-/* Glassy, nearly transparent fields — no ugly dark boxes. */
-.stApp:has(.uh-student-shell) div[data-testid="stTextInput"],
-.stApp:has(.uh-student-shell) div[data-testid="stTextArea"],
-.stApp:has(.uh-student-shell) div[data-testid="stNumberInput"],
-.stApp:has(.uh-student-shell) div[data-testid="stSelectbox"],
-.stApp:has(.uh-student-shell) div[data-testid="stMultiSelect"],
-.stApp:has(.uh-student-shell) div[data-testid="stDateInput"]{
-  position:relative;
-}
-.stApp:has(.uh-student-shell) div[data-testid="stTextInput"] input,
-.stApp:has(.uh-student-shell) div[data-testid="stTextArea"] textarea,
-.stApp:has(.uh-student-shell) div[data-testid="stNumberInput"] input,
-.stApp:has(.uh-student-shell) div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-.stApp:has(.uh-student-shell) div[data-testid="stMultiSelect"] [data-baseweb="select"] > div,
-.stApp:has(.uh-student-shell) div[data-testid="stDateInput"] input{
-  background:rgba(255,255,255,.48)!important;
-  color:#10264a!important;
-  -webkit-text-fill-color:#10264a!important;
-  border:1px solid rgba(116,145,184,.28)!important;
-  border-radius:15px!important;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.88),
-    inset 0 -1px 0 rgba(148,163,184,.08),
-    0 8px 22px rgba(31,73,125,.055)!important;
-  backdrop-filter:blur(14px)!important;
-  transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease,background .18s ease!important;
-}
-.stApp:has(.uh-student-shell) div[data-testid="stTextInput"] input,
-.stApp:has(.uh-student-shell) div[data-testid="stNumberInput"] input,
-.stApp:has(.uh-student-shell) div[data-testid="stDateInput"] input{min-height:43px!important;}
-.stApp:has(.uh-student-shell) div[data-testid="stTextArea"] textarea{min-height:105px!important;}
-.stApp:has(.uh-student-shell) div[data-testid="stTextInput"] input:focus,
-.stApp:has(.uh-student-shell) div[data-testid="stTextArea"] textarea:focus,
-.stApp:has(.uh-student-shell) div[data-testid="stNumberInput"] input:focus,
-.stApp:has(.uh-student-shell) div[data-testid="stSelectbox"] [data-baseweb="select"] > div:focus-within,
-.stApp:has(.uh-student-shell) div[data-testid="stMultiSelect"] [data-baseweb="select"] > div:focus-within,
-.stApp:has(.uh-student-shell) div[data-testid="stDateInput"] input:focus{
-  background:rgba(255,255,255,.72)!important;
-  border-color:rgba(37,99,235,.50)!important;
-  box-shadow:
-    0 0 0 3px rgba(37,99,235,.09),
-    0 12px 28px rgba(37,99,235,.09),
-    inset 0 1px 0 rgba(255,255,255,.95)!important;
-  transform:translateY(-1px);
-  outline:none!important;
-}
-.stApp:has(.uh-student-shell) input::placeholder,
-.stApp:has(.uh-student-shell) textarea::placeholder{
-  color:#8192aa!important;
-  opacity:1!important;
-}
-
-/* Native Streamlit buttons: premium glass with blue primary actions. */
-.stApp:has(.uh-student-shell) button{
-  color:#17345d!important;
-  border:1px solid rgba(107,135,173,.26)!important;
-  border-radius:14px!important;
-  background:rgba(255,255,255,.52)!important;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 8px 20px rgba(31,73,125,.06)!important;
-  backdrop-filter:blur(12px)!important;
-  transition:transform .16s ease,box-shadow .18s ease,border-color .18s ease,background .18s ease!important;
-}
-.stApp:has(.uh-student-shell) button:hover{
-  color:#0b3f91!important;
-  background:rgba(255,255,255,.76)!important;
-  border-color:rgba(37,99,235,.32)!important;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.96),0 12px 25px rgba(31,73,125,.10)!important;
-  transform:translateY(-2px);
-}
-.stApp:has(.uh-student-shell) button:active{transform:translateY(0) scale(.985)!important;}
-.stApp:has(.uh-student-shell) button[kind="primary"]{
-  color:#fff!important;
-  border:0!important;
-  background:linear-gradient(135deg,#123a7a,#2563eb 58%,#4f8cff)!important;
-  box-shadow:0 12px 25px rgba(37,99,235,.22),inset 0 1px 0 rgba(255,255,255,.24)!important;
-  position:relative;overflow:hidden;
-}
-.stApp:has(.uh-student-shell) button[kind="primary"]:after{
-  content:"";position:absolute;top:-50%;left:-35%;width:28%;height:200%;
-  transform:rotate(18deg);
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,.28),transparent);
-  animation:uhGloss 3.4s linear infinite;
-}
-
-/* Make Streamlit expanders, bordered containers and forms feel like
-   translucent product surfaces instead of opaque default boxes. */
-.stApp:has(.uh-student-shell) [data-testid="stExpander"],
-.stApp:has(.uh-student-shell) [data-testid="stVerticalBlockBorderWrapper"],
-.stApp:has(.uh-student-shell) [data-testid="stForm"]{
-  background:rgba(255,255,255,.34)!important;
-  border:1px solid rgba(255,255,255,.72)!important;
-  border-radius:20px!important;
-  box-shadow:0 12px 32px rgba(31,73,125,.055),inset 0 1px 0 rgba(255,255,255,.86)!important;
-  backdrop-filter:blur(14px)!important;
-}
-.stApp:has(.uh-student-shell) [data-testid="stExpander"] summary,
-.stApp:has(.uh-student-shell) [data-testid="stExpander"] summary p{
-  color:#10264a!important;
-  font-weight:850!important;
-}
-
-/* Tables / dataframe surfaces */
-.stApp:has(.uh-student-shell) [data-testid="stDataFrame"],
-.stApp:has(.uh-student-shell) [data-testid="stTable"]{
-  border-radius:16px!important;
-  overflow:hidden!important;
-  box-shadow:0 10px 28px rgba(31,73,125,.055)!important;
-}
-
-/* Tabs are compact glass pills. */
-.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab-list"]{
-  background:rgba(255,255,255,.40)!important;
-  border:1px solid rgba(255,255,255,.72)!important;
-  border-radius:15px!important;
-  padding:.25rem!important;
-  gap:.18rem!important;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.85),0 7px 18px rgba(31,73,125,.045)!important;
-  backdrop-filter:blur(14px)!important;
-}
-.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab"]{
-  color:#647792!important;
-  border-radius:11px!important;
-  font-weight:850!important;
-}
-.stApp:has(.uh-student-shell) .stTabs [aria-selected="true"]{
-  color:#123b79!important;
-  background:rgba(255,255,255,.76)!important;
-  box-shadow:0 5px 14px rgba(31,73,125,.08),inset 0 1px 0 rgba(255,255,255,.9)!important;
-}
-
-/* Keep the fixed mobile navigation glossy and readable. */
-.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav{
-  background:rgba(255,255,255,.62)!important;
-  border:1px solid rgba(255,255,255,.86)!important;
-  box-shadow:0 16px 38px rgba(31,73,125,.16),inset 0 1px 0 rgba(255,255,255,.95)!important;
-  backdrop-filter:blur(22px) saturate(145%)!important;
-}
-.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav button{
-  color:#647792!important;
-  background:transparent!important;
-  border:0!important;
-  box-shadow:none!important;
-}
-.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav .uh-nav-active button{color:#1554ad!important;}
-
-@keyframes uhGloss{0%{left:-35%}55%,100%{left:125%}}
-@keyframes uhAmbient{0%,100%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(10px,-14px,0) scale(1.04)}}
-
-@media(max-width:640px){
-  .stApp:has(.uh-student-shell) .main .block-container{max-width:100%!important;padding:12px 12px 100px!important;}
-  .stApp:has(.uh-student-shell) div[data-testid="stTextInput"] input,
-  .stApp:has(.uh-student-shell) div[data-testid="stNumberInput"] input,
-  .stApp:has(.uh-student-shell) div[data-testid="stSelectbox"] [data-baseweb="select"] > div,
-  .stApp:has(.uh-student-shell) div[data-testid="stMultiSelect"] [data-baseweb="select"] > div,
-  .stApp:has(.uh-student-shell) div[data-testid="stDateInput"] input{min-height:45px!important;}
-  .stApp:has(.uh-student-shell) button{min-height:44px!important;}
-}
-
-/* Mobile-first student app shell */
-.stApp:has(.uh-student-shell){background:#f7f7f5!important}
-.stApp:has(.uh-student-shell) [data-testid="stSidebar"]{display:none!important}
-.stApp:has(.uh-student-shell) .main .block-container{max-width:620px!important;padding:0 18px 96px!important;margin:0 auto!important}
-.stApp:has(.uh-student-shell) [data-testid="stHeader"]{background:transparent!important}
-.stApp:has(.uh-student-shell) .uh-app-header{display:flex;align-items:center;justify-content:space-between;padding:.85rem .05rem .5rem;position:sticky;top:0;z-index:20;background:rgba(247,247,245,.94);backdrop-filter:blur(14px)}
-.uh-app-header-brand{font-size:.7rem;font-weight:900;letter-spacing:.12em;color:#8b4a12;text-transform:uppercase}.uh-app-header-title{font-size:1.05rem;font-weight:900;color:#141414;letter-spacing:-.03em}.uh-app-header-user{font-size:.68rem;color:#737373;font-weight:700}
-.uh-header-icon button{width:42px!important;height:42px!important;min-height:42px!important;border-radius:50%!important;background:#fff!important;border:1px solid #e7e4df!important;box-shadow:0 4px 14px rgba(0,0,0,.06)!important;font-size:1.05rem!important;padding:0!important}
-.uh-home-greeting{margin:.35rem 0 .85rem}.uh-home-greeting .eyebrow{font-size:.64rem;letter-spacing:.13em;color:#9a5317;font-weight:900;text-transform:uppercase}.uh-home-greeting h1{font-size:2rem!important;line-height:1.04!important;letter-spacing:-.055em!important;color:#171717!important;margin:.2rem 0 0!important}.uh-home-greeting p{font-size:.78rem;color:#7b7b7b;margin:.35rem 0 0}
-.uh-coins-card{position:relative;overflow:hidden;border-radius:25px;padding:1.05rem 1.15rem 1.15rem;background:linear-gradient(135deg,#a94e05 0%,#c46109 52%,#e18a1a 100%);box-shadow:0 16px 32px rgba(163,76,5,.18);color:#fff;margin:.35rem 0 1.15rem}.uh-coins-card:after{content:"";position:absolute;width:170px;height:170px;border-radius:50%;right:-65px;top:-85px;background:rgba(255,255,255,.1)}.uh-coins-top{display:flex;justify-content:space-between;align-items:flex-start;position:relative;z-index:1}.uh-coins-label{font-size:.62rem;letter-spacing:.16em;font-weight:900;color:#ffe7a3}.uh-coins-value{font-size:2.6rem;line-height:1;font-weight:950;letter-spacing:-.06em;margin-top:.25rem}.uh-coins-value span{font-size:1rem;font-weight:700;opacity:.82;letter-spacing:-.02em}.uh-coins-badge{width:52px;height:52px;border-radius:17px;background:#fff;display:flex;align-items:center;justify-content:center;color:#c15b0a;font-size:1.45rem;box-shadow:0 7px 18px rgba(0,0,0,.12)}.uh-coins-bar{height:8px;border-radius:99px;background:rgba(255,255,255,.22);overflow:hidden;margin:1rem 0 .55rem;position:relative;z-index:1}.uh-coins-bar i{display:block;height:100%;border-radius:99px;background:#ffe27c}.uh-coins-foot{font-size:.7rem;color:#fff2d1;position:relative;z-index:1}
-.uh-impact-title{font-size:1.3rem!important;font-weight:900!important;letter-spacing:-.04em!important;color:#161616!important;margin:.25rem 0 .65rem!important}.uh-impact-grid{display:grid;gap:.55rem}.uh-impact-card{display:flex;align-items:center;gap:.75rem;background:#fff;border:1px solid #e8e5e0;border-radius:20px;padding:.72rem .82rem;box-shadow:0 5px 14px rgba(24,24,24,.045);transition:transform .18s ease,box-shadow .18s ease}.uh-impact-card:hover{transform:translateY(-2px);box-shadow:0 10px 22px rgba(24,24,24,.08)}.uh-impact-icon{width:48px;height:48px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:1.35rem;flex:none}.uh-impact-icon.blue{background:#e9f6fb;color:#1489a7}.uh-impact-icon.orange{background:#fff2e7;color:#b86417}.uh-impact-icon.yellow{background:#fff6cf;color:#c18a0b}.uh-impact-icon.red{background:#fde9e8;color:#c43e36}.uh-impact-copy{flex:1}.uh-impact-copy strong{display:block;font-size:.9rem;color:#171717}.uh-impact-copy span{display:block;font-size:.64rem;color:#8a8a8a;margin-top:.08rem}.uh-chevron{font-size:1.35rem;color:#777}
-.uh-nearby-head{display:flex;justify-content:space-between;align-items:center;margin:1.25rem 0 .55rem}.uh-nearby-head h2{font-size:1.25rem!important;color:#171717!important;margin:0!important;letter-spacing:-.04em}.uh-seeall button{border:0!important;background:transparent!important;color:#a45612!important;font-weight:850!important;font-size:.72rem!important;min-height:30px!important;box-shadow:none!important;padding:0!important}.uh-request-card{background:#fff;border:1px solid #e9e6e1;border-radius:20px;padding:.88rem;margin:.55rem 0;box-shadow:0 5px 14px rgba(24,24,24,.045)}.uh-request-card.urgent{background:#fff9f8;border-color:#f2d0cb}.uh-request-top{display:flex;align-items:center;gap:.65rem}.uh-request-avatar{width:40px;height:40px;border-radius:13px;background:#eaf5fa;color:#1387a5;display:flex;align-items:center;justify-content:center;font-weight:900}.uh-request-card.urgent .uh-request-avatar{background:#fde6e4;color:#c43e36}.uh-request-main{flex:1}.uh-request-main strong{font-size:.84rem;color:#191919}.uh-request-main span{display:block;font-size:.65rem;color:#8a8a8a;margin-top:.08rem}.uh-request-status{font-size:.57rem;font-weight:900;color:#b33d37;letter-spacing:.06em}.uh-request-meta{display:flex;align-items:center;gap:.4rem;color:#8a8a8a;font-size:.66rem;margin-top:.62rem}.uh-request-action button{background:#bd5b08!important;color:#fff!important;border:0!important;border-radius:12px!important;min-height:36px!important;box-shadow:0 6px 14px rgba(189,91,8,.18)!important;font-size:.68rem!important;font-weight:900!important}
-.uh-refresh{text-align:center;margin:.75rem 0;color:#ad5a15;font-size:.72rem;font-weight:800}.uh-refresh button{border:0!important;background:transparent!important;color:#ad5a15!important;box-shadow:none!important;font-weight:800!important}
-.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav{position:fixed;left:50%;bottom:10px;transform:translateX(-50%);width:min(590px,calc(100% - 22px));z-index:100;background:rgba(255,255,255,.96);border:1px solid #e6e2dc;border-radius:24px;box-shadow:0 12px 32px rgba(0,0,0,.13);padding:.45rem .45rem .38rem;backdrop-filter:blur(16px)}
-.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav [data-testid="column"]{display:flex;align-items:center;justify-content:center}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav button{border:0!important;background:transparent!important;color:#777!important;box-shadow:none!important;min-height:45px!important;padding:.2rem .1rem!important;font-size:.68rem!important;font-weight:800!important}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav button:hover{color:#a9530c!important;transform:none!important}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav .uh-nav-active button{color:#a9530c!important}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav .uh-nav-plus button{width:56px!important;height:56px!important;min-height:56px!important;border-radius:19px!important;background:#bd5b08!important;color:#fff!important;font-size:1.6rem!important;box-shadow:0 9px 18px rgba(189,91,8,.25)!important;margin-top:-20px!important}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav [data-testid="stHorizontalBlock"]{gap:.1rem}
-.uh-page-card{background:#fff;border:1px solid #e9e6e1;border-radius:22px;padding:.95rem;box-shadow:0 6px 18px rgba(24,24,24,.05)}.stApp:has(.uh-student-shell) .st-key-impact_borrow button,.stApp:has(.uh-student-shell) .st-key-impact_lend button,.stApp:has(.uh-student-shell) .st-key-impact_tasks button,.stApp:has(.uh-student-shell) .st-key-impact_help button{height:64px!important;min-height:64px!important;background:#fff!important;color:#171717!important;border:1px solid #e8e5e0!important;border-radius:20px!important;box-shadow:0 5px 14px rgba(24,24,24,.045)!important;text-align:left!important;padding:0 1rem!important;font-size:.88rem!important;font-weight:850!important;transition:transform .18s ease,box-shadow .18s ease!important}.stApp:has(.uh-student-shell) .st-key-impact_borrow button:hover,.stApp:has(.uh-student-shell) .st-key-impact_lend button:hover,.stApp:has(.uh-student-shell) .st-key-impact_tasks button:hover,.stApp:has(.uh-student-shell) .st-key-impact_help button:hover{transform:translateY(-2px)!important;box-shadow:0 10px 22px rgba(24,24,24,.08)!important}
-.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab-list"]{background:#efede9;border-radius:13px;padding:.2rem;gap:.15rem}.stApp:has(.uh-student-shell) .stTabs [data-baseweb="tab"]{height:34px;border-radius:10px;color:#777;font-size:.65rem;font-weight:800}.stApp:has(.uh-student-shell) .stTabs [aria-selected="true"]{background:#fff;color:#a6530c;box-shadow:0 3px 9px rgba(0,0,0,.06)}
-@media(max-width:640px){.stApp:has(.uh-student-shell) .main .block-container{padding-left:12px!important;padding-right:12px!important;padding-bottom:95px!important}.uh-home-greeting h1{font-size:1.72rem!important}.uh-coins-card{border-radius:22px;padding:.95rem}.uh-coins-value{font-size:2.35rem}.uh-impact-card{border-radius:18px}.uh-impact-icon{width:44px;height:44px}.stApp:has(.uh-student-shell) .st-key-uh-bottom-nav{bottom:7px;width:calc(100% - 14px);border-radius:22px}}
-
-/* Premium mobile-first product UI overrides */
-.stApp:has(.uh-student-shell){background:radial-gradient(circle at 0% 0%,rgba(225,236,255,.9),transparent 28%),radial-gradient(circle at 100% 20%,rgba(255,239,219,.72),transparent 30%),#f7f8fb!important;color:#14233f!important}
-.stApp:has(.uh-student-shell) .main .block-container{max-width:760px!important;padding-top:.55rem!important;padding-bottom:105px!important}
-.stApp:has(.uh-student-shell) [data-testid="stMarkdownContainer"]{color:#17243b}
-.stApp:has(.uh-student-shell) [data-testid="stTextInput"] label,.stApp:has(.uh-student-shell) [data-testid="stTextArea"] label,.stApp:has(.uh-student-shell) [data-testid="stSelectbox"] label,.stApp:has(.uh-student-shell) [data-testid="stNumberInput"] label{color:#33476a!important;font-weight:800!important}
-.stApp:has(.uh-student-shell) input,.stApp:has(.uh-student-shell) textarea,.stApp:has(.uh-student-shell) [data-baseweb="select"]>div{background:#fff!important;color:#16233b!important;border:1px solid #dbe3ee!important;border-radius:14px!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 5px 16px rgba(28,52,88,.045)!important}
-.stApp:has(.uh-student-shell) input::placeholder,.stApp:has(.uh-student-shell) textarea::placeholder{color:#9aa7b8!important}
-.stApp:has(.uh-student-shell) button{border-radius:14px!important;border:1px solid #dbe3ee!important;background:rgba(255,255,255,.9)!important;color:#203452!important;box-shadow:0 5px 15px rgba(31,54,90,.055)!important;font-weight:800!important;transition:all .2s ease!important}
-.stApp:has(.uh-student-shell) button:hover{transform:translateY(-2px)!important;box-shadow:0 10px 24px rgba(31,54,90,.10)!important}
-.stApp:has(.uh-student-shell) .stButton button[kind="primary"]{background:linear-gradient(135deg,#102a56,#1d5dcc)!important;color:white!important;border:0!important}
-.uh-mobile-header{display:flex;align-items:center;justify-content:space-between;padding:.35rem .1rem .2rem;margin-bottom:.2rem}
-.uh-mobile-brand{display:flex;align-items:center;gap:.55rem}.uh-mobile-brand>span{width:39px;height:39px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:linear-gradient(145deg,#fff,#eaf2ff);box-shadow:0 8px 20px rgba(18,53,101,.09);font-size:1.15rem}.uh-mobile-brand strong{display:block;color:#9b5215;font-size:.67rem;letter-spacing:.12em}.uh-mobile-brand small{display:block;color:#1c2e4c;font-size:.92rem;font-weight:900;margin-top:.08rem}.uh-mobile-greeting{font-size:.68rem;color:#748196;font-weight:750}
-.uh-page-kicker{font-size:.62rem;letter-spacing:.15em;color:#a45a19;font-weight:900;margin:.8rem 0 .15rem;text-transform:uppercase}
-.uh-choice-card,.uh-help-card{display:flex;align-items:center;gap:.8rem;padding:.8rem;margin:.45rem 0 .25rem;background:linear-gradient(145deg,rgba(255,255,255,.97),rgba(248,251,255,.94));border:1px solid rgba(214,224,237,.9);border-radius:20px;box-shadow:0 9px 25px rgba(22,48,86,.065),inset 0 1px 0 #fff;position:relative;overflow:hidden}
-.uh-choice-card:after,.uh-help-card:after{content:"";position:absolute;left:-20%;right:-20%;top:-80%;height:100%;background:linear-gradient(105deg,transparent 30%,rgba(255,255,255,.55) 50%,transparent 70%);transform:rotate(4deg);animation:uhGloss 5s ease-in-out infinite;pointer-events:none}
-.uh-choice-icon{width:48px;height:48px;border-radius:16px;background:linear-gradient(145deg,#edf6ff,#e3eefb);display:flex;align-items:center;justify-content:center;font-size:1.35rem;flex:none}.uh-choice-copy{flex:1}.uh-choice-copy strong{display:block;color:#172640;font-size:.92rem}.uh-choice-copy span{display:block;color:#7b899d;font-size:.68rem;margin-top:.12rem}
-.uh-choice-card + button,.uh-help-card + button{margin-bottom:.65rem}
-.uh-help-note{margin-top:1rem;padding:.8rem;border-radius:17px;background:#fff7ed;border:1px solid #fed7aa;color:#8a4b14}.uh-help-note strong{display:block;font-size:.76rem}.uh-help-note span{display:block;font-size:.67rem;margin-top:.2rem;line-height:1.45}
-@keyframes uhGloss{0%,55%{left:-80%;opacity:0}65%{opacity:1}85%,100%{left:120%;opacity:0}}
-@media(max-width:640px){.stApp:has(.uh-student-shell) .main .block-container{padding-left:12px!important;padding-right:12px!important}.uh-mobile-brand small{font-size:.84rem}.uh-home-greeting h1{font-size:1.68rem!important}.uh-coins-card{box-shadow:0 13px 28px rgba(163,76,5,.16)!important}}
 </style>
 """
-
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 init_db()
@@ -1266,6 +832,11 @@ if "auth_mode" not in st.session_state:
     st.session_state["auth_mode"] = "Home"
 if "nav" not in st.session_state:
     st.session_state["nav"] = "Dashboard"
+
+if not EMAIL_CONFIGURED:
+    st.markdown('<div class="uh-demo-banner">🧪 DEMO MODE — Email (SMTP) is not configured. '
+                'OTPs will be displayed on-screen instead of emailed.</div>', unsafe_allow_html=True)
+
 
 def status_badge(status):
     colors = {
@@ -1292,406 +863,158 @@ def status_badge(status):
 # 6.1 LANDING / AUTH PAGES
 # -----------------------------------------------------------------------------
 
-def _render_auth_shell_start():
-    st.markdown('<div class="uh-auth-shell"><div class="uh-auth-content">', unsafe_allow_html=True)
-
-
-def _render_auth_shell_end():
-    st.markdown('</div></div>', unsafe_allow_html=True)
-
-
-def _render_auth_hero():
+def render_landing():
     st.markdown(
-        '<div class="uh-auth-hero">'
-        '<div class="uh-auth-kicker"><span class="uh-auth-kicker-dot"></span>Student-powered campus network</div>'
-        '<div class="uh-auth-logo-wrap"><div class="uh-auth-logo-ring"></div><div class="uh-auth-logo-mark">🎓</div></div>'
-        '<h1>UNI HELP</h1>'
-        '<p class="uh-auth-tagline">Your campus. Your community.<br>Someone can help.</p>'
-        '<p class="uh-auth-subtitle">Borrow • Deliver • Assist • Earn</p>'
-        '</div>',
+        """
+        <div class="uh-hero">
+            <h1>🎓 UNI HELP</h1>
+            <p>"Your campus. Your community. Someone can help."</p>
+            <p style="font-size:1rem; margin-top:0.8rem;">Borrow, deliver, assist and earn —
+            inside a trusted university network.</p>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown('<div class="uh-card"><h3>📦 Delivery</h3>Request or deliver items across campus with OTP + QR verified handovers.</div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown('<div class="uh-card"><h3>🤝 Borrowing</h3>Lend and borrow calculators, chargers, books, tools and more — securely.</div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown('<div class="uh-card"><h3>🛠 Micro-Tasks</h3>Post small campus errands and get them done by a verified peer.</div>', unsafe_allow_html=True)
 
-def _set_user_and_route(user):
-    st.session_state["user"] = user
-    st.session_state["nav"] = "Admin" if user.get("role") == "admin" else "Dashboard"
-    st.rerun()
+    c4, c5, c6, c7 = st.columns(4)
+    for col, text in zip((c4, c5, c6, c7),
+                         ["🔐 Verified Students", "📱 OTP + QR", "📍 Location-aware Handover", "⭐ Trust & Reputation"]):
+        col.markdown(f'<div class="uh-card" style="text-align:center;">{text}</div>', unsafe_allow_html=True)
 
+    st.info("**UNI HELP is a verified university micro-service network** — not just a courier app. "
+            "It combines a verified student community, a borrowing marketplace, micro-tasks, delivery, "
+            "and secure OTP + QR + location-based handovers, all backed by trust scores and UniCoins.")
 
-def _send_student_login_email_otp(student_id, password):
-    """Validate existing credentials, then send a real email OTP to the registered email."""
-    if not EMAIL_CONFIGURED:
-        return False, "Email verification is not configured. Please contact the administrator."
-    ok, result = authenticate_student_credentials(student_id, password)
-    if not ok:
-        return False, result
-    email = (result.get("email") or "").strip()
-    if not email or not is_valid_email(email):
-        return False, "No valid email address is registered for this Student ID."
-    if not deliver_otp(result, "LOGIN_EMAIL_OTP", None, "login verification"):
-        return False, "Unable to send OTP. Please try again."
-    st.session_state["login_student_id"] = student_id.strip()
-    st.session_state["login_otp_resend_at"] = time.time() + SMS_RESEND_SECONDS
-    return True, "OTP sent successfully to your registered email."
-
-
-def _verify_student_login_email(student_id, password, otp):
-    """Revalidate credentials and verify the email OTP stored by the existing OTP system."""
-    ok, result = authenticate_student_credentials(student_id, password)
-    if not ok:
-        return False, result
-    ok, msg = verify_otp(result["id"], "LOGIN_EMAIL_OTP", None, otp)
-    return (True, result) if ok else (False, msg)
-
-
-def _send_registration_email_otp(user_id):
-    user = user_by_id(user_id)
-    if not user or not EMAIL_CONFIGURED:
-        return False, "Email verification is not configured. Please contact the administrator."
-    if not deliver_otp(user, "EMAIL_VERIFICATION", None, "email verification"):
-        return False, "Unable to send email OTP. Please try again."
-    st.session_state["registration_email_resend_at"] = time.time() + SMS_RESEND_SECONDS
-    return True, "Email OTP sent successfully."
-
-
-def _send_registration_sms_otp(user_id):
-    user = user_by_id(user_id)
-    if not user or not SMS_CONFIGURED:
-        return False, "SMS verification is not configured. Please contact the administrator."
-    if not normalize_phone(user["phone"] or ""):
-        return False, "No valid mobile number is registered."
-    if not deliver_sms_otp(user, "PHONE_VERIFICATION", None, "phone verification"):
-        return False, "Unable to send SMS OTP. Please try again."
-    st.session_state["registration_sms_resend_at"] = time.time() + SMS_RESEND_SECONDS
-    return True, "SMS OTP sent successfully."
-
-
-def _clear_registration_state():
-    # Registration now uses email verification only.  Keep unrelated
-    # authentication/session state untouched.
-    for key in ("pending_registration_user_id", "registration_email_verified", "registration_email_resend_at", "registration_phone_otp_sent", "registration_sms_resend_at", "registration_phone_verified"):
-        st.session_state.pop(key, None)
-
-
-def _auth_tabs(active):
-    st.markdown('<div class="uh-auth-tabs">', unsafe_allow_html=True)
-    a, b = st.columns(2, gap="small")
-    with a:
-        if active == "login":
-            st.markdown('<div class="uh-auth-tab-button uh-auth-tab-button-active"><button disabled>LOGIN</button></div>', unsafe_allow_html=True)
-        elif st.button("LOGIN", use_container_width=True, key="tab_login"):
-            _clear_registration_state()
-            st.session_state["auth_mode"] = "Home"
-            st.rerun()
-    with b:
-        if active == "register":
-            st.markdown('<div class="uh-auth-tab-button uh-auth-tab-button-active"><button disabled>CREATE ACCOUNT</button></div>', unsafe_allow_html=True)
-        elif st.button("CREATE ACCOUNT", use_container_width=True, key="tab_register"):
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("🚀 Get Started", use_container_width=True):
             st.session_state["auth_mode"] = "Register"
             st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def render_landing():
-    _render_auth_shell_start()
-    _render_auth_hero()
-    with st.container(border=True):
-        _auth_tabs("login")
-        st.markdown('<div class="uh-auth-card-title">Welcome back</div><div class="uh-auth-card-copy">Sign in with your Student ID, password and registered email.</div>', unsafe_allow_html=True)
-        sid = st.text_input("Student ID", placeholder="126xxxxx", max_chars=8, key="auth_student_id")
-        pw = st.text_input("Password", type="password", placeholder="Enter your password", key="auth_student_password")
-        if st.button("Send OTP", use_container_width=True, type="primary", key="auth_send_email"):
-            with st.spinner("Sending secure OTP…"):
-                ok, msg = _send_student_login_email_otp(sid, pw)
-            if ok:
-                st.success(msg)
-                st.rerun()
-            else:
-                st.error(msg)
-        if st.session_state.get("login_student_id"):
-            st.text_input("Email OTP", max_chars=6, placeholder="Enter 6-digit OTP", key="auth_login_otp")
-            remaining = max(0, int(st.session_state.get("login_otp_resend_at", 0) - time.time()))
-            if st.button("Verify & Login", use_container_width=True, type="primary", key="auth_verify_email"):
-                with st.spinner("Verifying OTP…"):
-                    ok, result = _verify_student_login_email(sid or st.session_state.get("login_student_id", ""), pw, st.session_state.get("auth_login_otp", ""))
-                if ok:
-                    st.success("Login successful. Welcome back!")
-                    st.session_state.pop("login_student_id", None)
-                    st.session_state.pop("login_otp_resend_at", None)
-                    _set_user_and_route(result)
-                else:
-                    st.error("OTP expired. Please request a new one." if "expired" in str(result).lower() else "Invalid OTP. Please try again.")
-            if st.button("Resend OTP", disabled=remaining > 0, use_container_width=True, key="auth_resend_email"):
-                with st.spinner("Sending secure OTP…"):
-                    ok, msg = _send_student_login_email_otp(sid or st.session_state.get("login_student_id", ""), pw)
-                if ok:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
-            if remaining:
-                st.markdown(f'<div class="uh-otp-note">Resend available in {remaining}s</div>', unsafe_allow_html=True)
-        st.markdown('<div class="uh-auth-divider"><span>New to UNI HELP?</span></div>', unsafe_allow_html=True)
-        if st.button("Create an account", use_container_width=True, key="auth_create"):
-            st.session_state["auth_mode"] = "Register"
+    with colB:
+        if st.button("🔑 I already have an account — Login", use_container_width=True):
+            st.session_state["auth_mode"] = "Login"
             st.rerun()
-        if st.button("Admin Login", use_container_width=True, key="auth_admin"):
-            st.session_state["auth_mode"] = "AdminLogin"
-            st.rerun()
-        st.markdown('<div class="uh-auth-mini-row"><span>Protected by secure account verification</span><b>•</b><span>UNI HELP</span></div>', unsafe_allow_html=True)
-        if not EMAIL_CONFIGURED:
-            missing = "email"
-            st.markdown(f'<div class="uh-auth-demo">Configuration notice • {missing} service is not configured</div>', unsafe_allow_html=True)
-    _render_auth_shell_end()
+
+    with st.expander("🧪 Demo tools (for evaluators / hackathon judges)"):
+        st.write(f"Load sample students, delivery requests, borrow items, tasks and UniCoins into the database.")
+        if st.button("📥 LOAD DEMO DATA"):
+            seed_demo_data()
+            st.success("Demo data loaded. Demo accounts (password: `demo1234`):")
+            for full_name, local, *_ in DEMO_STUDENTS:
+                st.code(f"{full_name}: {local}{UNIVERSITY_EMAIL_DOMAIN}")
+        st.caption(f"Admin login: `{ADMIN_EMAIL}` / `{ADMIN_PASSWORD}`")
 
 
 def render_register():
-    _render_auth_shell_start()
-    _render_auth_hero()
-    with st.container(border=True):
-        _auth_tabs("register")
-        st.markdown(
-            '<div class="uh-auth-card-title">Create your account</div>'
-            '<div class="uh-auth-card-copy">Use any valid email address. Your phone number is kept for UNI HELP services, not OTP verification.</div>',
-            unsafe_allow_html=True,
-        )
-        pending_id = st.session_state.get("pending_registration_user_id")
-        email_verified = bool(st.session_state.get("registration_email_verified"))
-        user = user_by_id(pending_id) if pending_id else None
-
-        if not user or not pending_id:
-            with st.form("register_form"):
-                full_name = st.text_input("Full Name", placeholder="Your full name")
-                email = st.text_input("Email Address", placeholder="you@example.com")
-                student_id = st.text_input("Student ID", placeholder="126xxxxx", max_chars=8)
-                phone = st.text_input("Phone Number", placeholder="9876543210", max_chars=10)
-                password = st.text_input("Password", type="password", placeholder="At least 6 characters")
-                password2 = st.text_input("Confirm Password", type="password", placeholder="Repeat your password")
-                submitted = st.form_submit_button("Create Account & Send Email OTP", use_container_width=True, type="primary")
-            if submitted:
-                if password != password2:
-                    st.error("Passwords do not match.")
-                elif not is_valid_email(email):
-                    st.error("Please enter a valid email address.")
-                elif not is_valid_student_id(student_id):
-                    st.error("Student ID must be exactly 8 digits and start with 126.")
-                elif not is_valid_phone(phone):
-                    st.error("Please enter a valid 10-digit mobile number.")
-                elif not EMAIL_CONFIGURED:
-                    st.error("Email verification is not configured. Please contact the administrator.")
-                else:
-                    with st.spinner("Creating secure verification session…"):
-                        ok, result = register_user(full_name, email, phone, student_id, password)
-                    if ok:
-                        st.session_state["pending_registration_user_id"] = result
-                        ok2, msg = _send_registration_email_otp(result)
-                        if ok2:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-                    else:
-                        st.error(result)
-        else:
-            st.markdown(
-                f'<div class="uh-auth-status ok">Verification started for <strong>{user["email"]}</strong></div>',
-                unsafe_allow_html=True,
-            )
-
-            if not email_verified:
-                st.text_input(
-                    "Email OTP",
-                    max_chars=6,
-                    placeholder="Enter 6-digit email OTP",
-                    key="reg_email_otp",
-                )
-                if st.button("Verify Email", use_container_width=True, type="primary", key="reg_verify_email"):
-                    with st.spinner("Verifying email…"):
-                        ok, msg = verify_otp(
-                            user["id"],
-                            "EMAIL_VERIFICATION",
-                            None,
-                            st.session_state.get("reg_email_otp", ""),
-                        )
-                    if ok:
-                        st.session_state["registration_email_verified"] = True
-                        st.success("Email verified successfully.")
-                        st.rerun()
-                    else:
-                        st.error(
-                            "OTP expired. Please request a new one."
-                            if "expired" in msg.lower()
-                            else "Invalid email OTP. Please try again."
-                        )
-
-                remaining = max(
-                    0,
-                    int(st.session_state.get("registration_email_resend_at", 0) - time.time()),
-                )
-                if st.button(
-                    "Resend Email OTP",
-                    disabled=remaining > 0,
-                    use_container_width=True,
-                    key="reg_resend_email",
-                ):
-                    with st.spinner("Sending email OTP…"):
-                        ok, msg = _send_registration_email_otp(user["id"])
-                    if ok:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
-                if remaining:
-                    st.markdown(
-                        f'<div class="uh-otp-note">Resend available in {remaining}s</div>',
-                        unsafe_allow_html=True,
-                    )
+    st.subheader("Create your UNI HELP account")
+    st.caption(f"University email must end with **{UNIVERSITY_EMAIL_DOMAIN}**")
+    with st.form("register_form"):
+        full_name = st.text_input("Full name")
+        email = st.text_input("University email", placeholder=f"yourname{UNIVERSITY_EMAIL_DOMAIN}")
+        phone = st.text_input("Phone number")
+        student_id = st.text_input("Student ID")
+        password = st.text_input("Password", type="password")
+        password2 = st.text_input("Confirm password", type="password")
+        submitted = st.form_submit_button("Register")
+        if submitted:
+            if password != password2:
+                st.error("Passwords do not match.")
             else:
-                st.markdown(
-                    '<div class="uh-auth-status ok">✓ Email verified</div>',
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    '<div class="uh-auth-status info">Your email is verified. You can now create your UNI HELP account.</div>',
-                    unsafe_allow_html=True,
-                )
-                if st.button(
-                    "Create Account",
-                    use_container_width=True,
-                    type="primary",
-                    key="reg_finish",
-                ):
-                    with st.spinner("Creating your UNI HELP account…"):
-                        conn = get_conn()
-                        conn.execute("UPDATE users SET verified=1 WHERE id=?", (user["id"],))
-                        conn.commit()
-                        conn.close()
-                    notify(user["id"], "Welcome to UNI HELP! Your email has been verified.")
-                    _clear_registration_state()
-                    st.session_state["auth_mode"] = "Home"
-                    st.success("Account created successfully. Please log in.")
+                ok, result = register_user(full_name, email, phone, student_id, password)
+                if ok:
+                    st.session_state["pending_verify_email"] = email.strip().lower()
+                    st.session_state["auth_mode"] = "Verify"
+                    st.success("Account created! Please verify your email to continue.")
                     st.rerun()
-
-        st.markdown(
-            '<div class="uh-auth-divider"><span>Already have an account?</span></div>',
-            unsafe_allow_html=True,
-        )
-        if st.button("← Back to Login", use_container_width=True, key="register_back"):
-            _clear_registration_state()
-            st.session_state["auth_mode"] = "Home"
-            st.rerun()
-        st.markdown(
-            '<div class="uh-auth-mini-row"><span>Your information stays inside UNI HELP</span></div>',
-            unsafe_allow_html=True,
-        )
-    _render_auth_shell_end()
-
-
-def render_register_verify():
-    # Legacy route retained so existing session links do not break.
-    render_register()
+                else:
+                    st.error(result)
+    if st.button("⬅ Back"):
+        st.session_state["auth_mode"] = "Home"
+        st.rerun()
 
 
 def render_verify():
-    _render_auth_shell_start(); _render_auth_hero()
-    with st.container(border=True):
-        st.markdown('<div class="uh-auth-card-title">Verify your email</div><div class="uh-auth-card-copy">Enter the 6-digit code sent to your email.</div>', unsafe_allow_html=True)
-        email = st.session_state.get("pending_verify_email", "")
-        email = st.text_input("Email address", value=email, key="verify_email")
-        otp = st.text_input("Email OTP", max_chars=6, placeholder="Enter 6-digit OTP", key="verify_otp")
-        if st.button("Verify OTP", use_container_width=True, type="primary", key="verify_otp_button"):
+    st.subheader("📧 Verify your email")
+    email = st.session_state.get("pending_verify_email", "")
+    email = st.text_input("Email to verify", value=email)
+    otp_input = st.text_input("Enter the 6-digit code", max_chars=6)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Verify"):
             u = user_by_email(email.strip().lower())
-            if not u: st.error("No account found with that email.")
+            if not u:
+                st.error("No account found with that email.")
             else:
-                with st.spinner("Verifying OTP…"):
-                    ok, msg = verify_otp(u["id"], "EMAIL_VERIFICATION", None, otp)
+                ok, msg = verify_otp(u["id"], "EMAIL_VERIFICATION", None, otp_input)
                 if ok:
-                    conn = get_conn(); conn.execute("UPDATE users SET verified=1 WHERE id=?", (u["id"],)); conn.commit(); conn.close()
-                    notify(u["id"], "Your email has been verified.")
-                    st.success("Email verified successfully.")
-                    st.session_state["auth_mode"] = "Home"; st.rerun()
-                else: st.error("OTP expired. Please request a new one." if "expired" in msg.lower() else "Invalid OTP. Please try again.")
-        if st.button("Resend OTP", use_container_width=True, key="verify_resend"):
+                    conn = get_conn()
+                    conn.execute("UPDATE users SET verified = 1 WHERE id = ?", (u["id"],))
+                    conn.commit()
+                    conn.close()
+                    notify(u["id"], "Your email has been verified. Welcome to the verified campus network!")
+                    st.success("Email verified! You can now log in.")
+                    st.session_state["auth_mode"] = "Login"
+                    st.rerun()
+                else:
+                    st.error(msg)
+    with col2:
+        if st.button("Resend code"):
             u = user_by_email(email.strip().lower())
-            if not u or not EMAIL_CONFIGURED: st.error("Unable to send OTP. Please try again later.")
-            elif deliver_otp(u, "EMAIL_VERIFICATION", None, "email verification"): st.success("OTP sent successfully."); st.rerun()
-            else: st.error("Unable to send OTP. Please try again.")
-        if st.button("← Back", use_container_width=True, key="verify_back"):
-            st.session_state["auth_mode"] = "Home"; st.rerun()
-    _render_auth_shell_end()
+            if u:
+                deliver_otp(u, "EMAIL_VERIFICATION", None, "email verification")
+            else:
+                st.error("No account found with that email.")
+    if st.button("⬅ Back to login"):
+        st.session_state["auth_mode"] = "Login"
+        st.rerun()
 
 
 def render_login():
-    # Existing route retained; use the redesigned login screen.
-    render_landing()
-
-
-def render_admin_login():
-    _render_auth_shell_start(); _render_auth_hero()
-    with st.container(border=True):
-        st.markdown('<div class="uh-auth-card-title">Admin Login</div><div class="uh-auth-card-copy">Secure platform management access only.</div>', unsafe_allow_html=True)
-        with st.form("admin_login_form"):
-            email = st.text_input("Admin email", key="admin_login_email")
-            password = st.text_input("Admin password", type="password", key="admin_login_password")
-            submitted = st.form_submit_button("Sign in as Admin", use_container_width=True, type="primary")
+    st.subheader("Login to UNI HELP")
+    with st.form("login_form"):
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
         if submitted:
-            with st.spinner("Signing in securely…"):
-                ok, result = login_user(email, password)
-            if ok and result.get("role") == "admin":
-                _set_user_and_route(result)
-            elif ok:
-                st.error("This account does not have administrator access.")
+            ok, result = login_user(email, password)
+            if ok:
+                st.session_state["user"] = result
+                st.session_state["nav"] = "Dashboard"
+                st.rerun()
             else:
-                st.error("Invalid admin credentials.")
-        if st.button("← Back to login", use_container_width=True, key="admin_login_back"):
-            st.session_state["auth_mode"] = "Home"; st.rerun()
-    _render_auth_shell_end()
+                st.error(result)
+    colA, colB = st.columns(2)
+    with colA:
+        if st.button("Need an account? Register"):
+            st.session_state["auth_mode"] = "Register"
+            st.rerun()
+    with colB:
+        if st.button("Verify email instead"):
+            st.session_state["auth_mode"] = "Verify"
+            st.rerun()
+    if st.button("⬅ Back"):
+        st.session_state["auth_mode"] = "Home"
+        st.rerun()
 
 
-# 6.2.1 CREATE / HELP HUBS
 # -----------------------------------------------------------------------------
-
-def render_create_hub(user):
-    st.markdown("<div class='uh-page-kicker'>CREATE</div>", unsafe_allow_html=True)
-    st.markdown("# What do you want to do? ✨")
-    st.caption("Choose an action. Each option opens its own UNI HELP workflow.")
-    actions = [
-        ("📦", "Delivery", "Create or manage campus deliveries.", "Delivery", "create_delivery_hub"),
-        ("🤝", "Borrow / Lend", "Find an item or share something with another student.", "Borrowing", "create_borrow_hub"),
-        ("⚡", "Micro-Task", "Post a small task or help someone nearby.", "Micro-Tasks", "create_task_hub"),
-        ("🙋", "Need Help", "Tell your campus community what you need.", "Help", "create_help_hub"),
-    ]
-    for icon, title, copy, target, key in actions:
-        st.markdown(f"<div class='uh-choice-card'><div class='uh-choice-icon'>{icon}</div><div class='uh-choice-copy'><strong>{title}</strong><span>{copy}</span></div></div>", unsafe_allow_html=True)
-        if st.button(f"Open {title}  →", key=key, use_container_width=True):
-            st.session_state['nav'] = target
-            st.rerun()
-
-
-def render_help_hub(user):
-    st.markdown("<div class='uh-page-kicker'>CAMPUS SUPPORT</div>", unsafe_allow_html=True)
-    st.markdown("# Need Help? 🙋")
-    st.caption("Start with the type of help you need. UNI HELP will take you to the correct workflow.")
-
-    choices = [
-        ("📦", "Delivery help", "Need someone to pick up and deliver something?", "Delivery", "help_delivery"),
-        ("🤝", "Borrow something", "Need an item from another student?", "Borrowing", "help_borrow"),
-        ("⚡", "Small campus task", "Need someone to complete a quick task?", "Micro-Tasks", "help_task"),
-    ]
-    for icon, title, copy, target, key in choices:
-        st.markdown(f"<div class='uh-help-card'><div class='uh-choice-icon'>{icon}</div><div class='uh-choice-copy'><strong>{title}</strong><span>{copy}</span></div></div>", unsafe_allow_html=True)
-        if st.button(f"{title}  →", key=key, use_container_width=True):
-            st.session_state['nav'] = target
-            st.rerun()
-
-    st.markdown("<div class='uh-help-note'><strong>Not sure which one?</strong><span>Choose Delivery for moving an item, Borrowing for an item you need to use, or Micro-Task for a small action you need another student to complete.</span></div>", unsafe_allow_html=True)
-
 # 6.2 DASHBOARD
 # -----------------------------------------------------------------------------
 
 def render_dashboard(user):
-    """Mobile-first student home. Uses existing SQLite data and existing module routes."""
+    st.markdown(f"## Welcome, {user['full_name']} 👋")
+    if not user["verified"]:
+        st.warning("Your email isn't verified yet. Some actions may be limited. "
+                   "Go to the sidebar → Verify Email.")
+
     conn = get_conn()
     completed_deliveries = conn.execute(
         "SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (user["id"],)
@@ -1703,110 +1026,51 @@ def render_dashboard(user):
     earnings = conn.execute(
         "SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (user["id"],)
     ).fetchone()["s"]
-    active_requests = conn.execute(
-        "SELECT COUNT(*) c FROM requests WHERE requester_id=? AND status NOT IN ('COMPLETED','CANCELLED')",
-        (user["id"],),
-    ).fetchone()["c"]
-    nearby = conn.execute(
-        """SELECT r.*, u.full_name requester_name FROM requests r
-           JOIN users u ON u.id=r.requester_id
-           WHERE r.requester_id != ? AND r.status='CREATED'
-           ORDER BY r.id DESC LIMIT 3""", (user["id"],)
-    ).fetchall()
-    nearby_borrow = conn.execute(
-        """SELECT i.*, u.full_name owner_name FROM items i
-           JOIN users u ON u.id=i.owner_id
-           WHERE i.owner_id != ? AND i.status='AVAILABLE'
-           ORDER BY i.id DESC LIMIT 3""", (user["id"],)
-    ).fetchall()
-    unread = conn.execute("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0", (user["id"],)).fetchone()["c"]
     conn.close()
 
-    safe_name = str(user['full_name']).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-    coins = int(user.get('unicoins') or 0)
-    coin_progress = min(100, int((coins / 500) * 100))
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("Trust Score", f"{user['trust_score']}/100")
+    avg_rating = round(user["rating_sum"] / user["rating_count"], 1) if user["rating_count"] else 0
+    m2.metric("Rating", f"⭐ {avg_rating}" if user["rating_count"] else "No ratings yet")
+    m3.metric("Tasks Completed", completed_deliveries)
+    m4.metric("Active Borrowings", active_borrow)
+    m5.metric("Earnings (prototype)", f"₹{earnings:.0f}")
+    m6.metric("UniCoins", f"🪙 {user['unicoins']}")
 
-    st.markdown(f"""<div class='uh-home-greeting'>
-        <div class='eyebrow'>UNI HELP • CAMPUS MARKETPLACE</div>
-        <h1>Welcome back, {safe_name} 👋</h1>
-        <p>Small actions. Real campus impact.</p>
-    </div>""", unsafe_allow_html=True)
+    st.markdown("#### Quick actions")
+    c1, c2, c3, c4 = st.columns(4)
+    if c1.button("📦 Delivery", use_container_width=True):
+        st.session_state["nav"] = "Delivery"; st.rerun()
+    if c2.button("🤝 Borrow", use_container_width=True):
+        st.session_state["nav"] = "Borrowing"; st.rerun()
+    if c3.button("🛠 Micro Task", use_container_width=True):
+        st.session_state["nav"] = "Micro-Tasks"; st.rerun()
+    if c4.button("💰 Wallet / Earn", use_container_width=True):
+        st.session_state["nav"] = "Wallet"; st.rerun()
 
-    st.markdown(f"""<div class='uh-coins-card'>
-        <div class='uh-coins-top'><div><div class='uh-coins-label'>UNI COINS</div>
-        <div class='uh-coins-value'>{coins} <span>/ 500</span></div></div>
-        <div class='uh-coins-badge'>✦</div></div>
-        <div class='uh-coins-bar'><i style='width:{coin_progress}%'></i></div>
-        <div class='uh-coins-foot'>Keep helping to build your campus reputation.</div>
-    </div>""", unsafe_allow_html=True)
+    st.divider()
+    colL, colR = st.columns(2)
+    with colL:
+        st.markdown("#### 📨 Recent notifications")
+        notifs = get_notifications(user["id"], limit=6)
+        if not notifs:
+            st.caption("No notifications yet.")
+        for n in notifs:
+            prefix = "🔵 " if not n["is_read"] else ""
+            st.markdown(f"- {prefix}{n['message']}  \n  <small>{n['created_at'][:19].replace('T',' ')}</small>", unsafe_allow_html=True)
 
-    st.markdown("<div class='uh-impact-title'>Make an impact</div>", unsafe_allow_html=True)
-    impact = [
-        ("🔎", "blue", "Find to borrow", "Discover useful items from students", "Borrowing", "impact_borrow"),
-        ("📦", "orange", "Lend an item", "Share something another student needs", "Borrowing", "impact_lend"),
-        ("☷", "yellow", "Find tasks", "Earn UniCoins by helping around campus", "Micro-Tasks", "impact_tasks"),
-        ("!", "red", "Need help", "Tell the campus what you need", "Help", "impact_help"),
-    ]
-    for icon, tone, title, copy, nav, key in impact:
-        if st.button(f"{icon}   {title}   ›", key=key, use_container_width=True):
-            st.session_state['nav'] = nav
-            st.rerun()
-
-    st.markdown("<div class='uh-nearby-head'><h2>Nearby requests</h2></div>", unsafe_allow_html=True)
-    if not nearby:
-        st.markdown("<div class='uh-page-card'><strong>No nearby requests yet</strong><div style='font-size:.7rem;color:#888;margin-top:.25rem'>New campus requests will appear here.</div></div>", unsafe_allow_html=True)
-    else:
-        for r in nearby:
-            name = str(r['requester_name'] or 'Student')
-            initial = name[0].upper()
-            urgent = 'urgent' in str(r['item_name'] or '').lower() or 'urgent' in str(r['notes'] or '').lower()
-            location = r['pickup_location'] or 'Campus'
-            st.markdown(f"""<div class='uh-request-card {'urgent' if urgent else ''}'>
-                <div class='uh-request-top'><div class='uh-request-avatar'>{initial}</div><div class='uh-request-main'>
-                <strong>{str(r['item_name']).replace('<','&lt;').replace('>','&gt;')}</strong><span>{name} • {str(location).replace('<','&lt;').replace('>','&gt;')}</span></div>
-                <div class='uh-request-status'>{'URGENT' if urgent else 'OPEN'}</div></div>
-                <div class='uh-request-meta'>⌖ Reward ₹{float(r['reward']):.0f} · {str(r['destination'] or 'Campus')}</div>
-            </div>""", unsafe_allow_html=True)
-
-    if nearby_borrow:
-        st.markdown("<div class='uh-nearby-head' style='margin-top:1.1rem'><h2>Available to borrow</h2></div>", unsafe_allow_html=True)
-        for it in nearby_borrow:
-            item_name = str(it['item_name'] or 'Item').replace('<','&lt;').replace('>','&gt;')
-            owner_name = str(it['owner_name'] or 'Student').replace('<','&lt;').replace('>','&gt;')
-            initial = owner_name[0].upper() if owner_name else 'S'
-            st.markdown(f"""<div class='uh-request-card'>
-                <div class='uh-request-top'><div class='uh-request-avatar'>{initial}</div><div class='uh-request-main'>
-                <strong>🤝 {item_name}</strong><span>{owner_name} • {str(it['category'] or 'Other')}</span></div>
-                <div class='uh-request-status' style='color:#a45612'>AVAILABLE</div></div>
-                <div class='uh-request-meta'>💰 Deposit ₹{float(it['deposit']):.0f} · {str(it['condition'] or 'Condition not specified')}</div>
-            </div>""", unsafe_allow_html=True)
-            if st.button("🤝 Request to Borrow", key=f"home_borrow_{it['id']}", use_container_width=True):
-                st.session_state['nav'] = 'Borrowing'
-                st.session_state['borrow_focus_item'] = int(it['id'])
-                st.rerun()
-
-    st.markdown("<div class='uh-refresh'>↻ &nbsp;Live campus requests</div>", unsafe_allow_html=True)
-
-    if not user["verified"]:
-        st.markdown("<div class='uh-soft-alert'>📧 <strong>Email verification pending.</strong> Verify your email to unlock all campus features.</div>", unsafe_allow_html=True)
-
-
-def render_leaders(user):
-    """Lightweight leaderboard using existing users/trust/UniCoins; no new database tables."""
-    conn = get_conn()
-    leaders = conn.execute(
-        """SELECT full_name, student_id, trust_score, rating_sum, rating_count, unicoins
-           FROM users WHERE role='student' AND is_suspended=0
-           ORDER BY trust_score DESC, unicoins DESC LIMIT 10"""
-    ).fetchall()
-    conn.close()
-    st.markdown("<div class='uh-home-greeting'><div class='eyebrow'>CAMPUS COMMUNITY</div><h1>Leaders 🏆</h1><p>Students making a difference through verified help.</p></div>", unsafe_allow_html=True)
-    for i, row in enumerate(leaders, 1):
-        avg = round(row['rating_sum'] / row['rating_count'], 1) if row['rating_count'] else 0
-        name = str(row['full_name'] or 'Student')
-        st.markdown(f"""<div class='uh-request-card'><div class='uh-request-top'><div class='uh-request-avatar'>{i}</div>
-        <div class='uh-request-main'><strong>{name}</strong><span>Trust {row['trust_score']}/100 · ⭐ {avg if avg else 'New'}</span></div>
-        <div class='uh-request-status' style='color:#a45612'>🪙 {row['unicoins']}</div></div></div>""", unsafe_allow_html=True)
+    with colR:
+        st.markdown("#### 📦 Your active delivery requests")
+        conn = get_conn()
+        active = conn.execute(
+            "SELECT * FROM requests WHERE requester_id=? AND status NOT IN ('COMPLETED','CANCELLED') ORDER BY id DESC",
+            (user["id"],),
+        ).fetchall()
+        conn.close()
+        if not active:
+            st.caption("No active requests.")
+        for r in active:
+            st.markdown(f"**{r['item_name']}** — {status_badge(r['status'])}", unsafe_allow_html=True)
 
 
 # -----------------------------------------------------------------------------
@@ -2347,8 +1611,74 @@ def _finalize_return(b, borrower_user):
 # 6.6 MICRO-TASK MODULE
 # -----------------------------------------------------------------------------
 
+def get_active_helper_task(user_id):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT t.*, u.full_name creator_name, u.phone creator_phone, u.email creator_email "
+        "FROM tasks t JOIN users u ON u.id=t.creator_id "
+        "WHERE t.helper_id=? AND t.status IN ('ACCEPTED','IN_PROGRESS') "
+        "ORDER BY t.id DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    return row
+
+
+def task_code(task_id):
+    return f"UNIH{int(task_id):04d}"
+
+
 def render_microtasks(user):
     st.markdown("## 🛠 Micro-Tasks")
+
+    # A helper with an accepted/in-progress task is locked to that task until it is finished.
+    active = get_active_helper_task(user["id"])
+    if active:
+        st.markdown("### 🔒 Your active task")
+        st.caption(f"Task ID: **{active['task_code'] or task_code(active['id'])}**")
+        with st.container(border=True):
+            st.markdown(f"**{active['title']}**  {status_badge(active['status'])}", unsafe_allow_html=True)
+            st.write(active["description"] or "")
+            st.write(f"💰 ₹{active['reward']:.0f}  |  👤 Requester: {active['creator_name']}")
+            if active["creator_phone"]:
+                st.markdown(f"📞 **Contact requester:** [Call {active['creator_name']}](tel:{active['creator_phone']})")
+            if active["status"] == "ACCEPTED":
+                if st.button("▶ Start Task", key=f"active_start_locked_{active['id']}", use_container_width=True):
+                    conn = get_conn()
+                    conn.execute("UPDATE tasks SET status='IN_PROGRESS' WHERE id=? AND helper_id=? AND status='ACCEPTED'", (active['id'], user['id']))
+                    conn.commit(); conn.close(); st.rerun()
+            elif active["status"] == "IN_PROGRESS":
+                if active["admin_otp_bypass"]:
+                    st.success("🛡 Admin verification override enabled — OTP is not required.")
+                    if st.button("✅ Complete Task", key=f"active_complete_admin_{active['id']}", use_container_width=True):
+                        conn = get_conn()
+                        conn.execute("UPDATE tasks SET status='COMPLETED', completed_at=? WHERE id=? AND helper_id=? AND status='IN_PROGRESS'", (now_iso(), active['id'], user['id']))
+                        conn.commit(); conn.close()
+                        update_transaction_status("TASK", active['id'], "RELEASED")
+                        add_unicoins(user['id'], 15, "Micro-task completed")
+                        recalc_trust_score(user['id'])
+                        notify(active['creator_id'], f"Your task '{active['title']}' was completed by {user['full_name']}.")
+                        st.success("Task completed!")
+                        st.rerun()
+                else:
+                    code = st.text_input("Completion OTP from requester", key=f"active_complete_code_{active['id']}", max_chars=6)
+                    if st.button("Verify & Complete", key=f"active_complete_btn_{active['id']}", use_container_width=True):
+                        ok, msg = verify_otp(active['creator_id'], "DELIVERY_COMPLETION", active['id'], code)
+                        if ok:
+                            conn = get_conn()
+                            conn.execute("UPDATE tasks SET status='COMPLETED', completed_at=? WHERE id=? AND helper_id=? AND status='IN_PROGRESS'", (now_iso(), active['id'], user['id']))
+                            conn.commit(); conn.close()
+                            update_transaction_status("TASK", active['id'], "RELEASED")
+                            add_unicoins(user['id'], 15, "Micro-task completed")
+                            recalc_trust_score(user['id'])
+                            notify(active['creator_id'], f"Your task '{active['title']}' was completed and verified.")
+                            st.success("Task completed!")
+                            st.rerun()
+                        else:
+                            st.error(msg)
+        st.info("🔒 UNI HELP is locked to your active task until it is completed.")
+        return
+
     tabs = st.tabs(["Create Task", "Browse & Accept", "My Tasks (creator)", "My Tasks (helper)"])
 
     with tabs[0]:
@@ -2371,128 +1701,52 @@ def render_microtasks(user):
                     conn = get_conn()
                     conn.execute(
                         """INSERT INTO tasks (creator_id, title, description, pickup, destination,
-                            reward, deadline, category, status, created_at)
-                           VALUES (?,?,?,?,?,?,?,?, 'CREATED', ?)""",
+                            reward, deadline, category, status, created_at, task_code)
+                           VALUES (?,?,?,?,?,?,?,?, 'CREATED', ?, NULL)""",
                         (user["id"], title.strip(), description, pickup, destination, reward, deadline, category, now_iso()),
                     )
+                    new_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                    conn.execute("UPDATE tasks SET task_code=? WHERE id=?", (task_code(new_id), new_id))
                     conn.commit()
                     conn.close()
                     st.success("Task created!")
                     st.rerun()
 
     with tabs[1]:
-        # A helper may work on only ONE micro-task at a time. Once a task is
-        # accepted, do not expose any other tasks until that task is completed.
         conn = get_conn()
-        active_task = conn.execute(
+        open_tasks = conn.execute(
             "SELECT t.*, u.full_name creator_name FROM tasks t JOIN users u ON u.id=t.creator_id "
-            "WHERE t.helper_id=? AND t.status IN ('ACCEPTED','IN_PROGRESS') "
-            "ORDER BY t.accepted_at DESC, t.id DESC LIMIT 1",
-            (user["id"],),
-        ).fetchone()
+            "WHERE t.status='CREATED' AND t.creator_id != ? ORDER BY t.id DESC", (user["id"],)
+        ).fetchall()
         conn.close()
-
-        if active_task:
-            st.markdown("### 🔒 Your current task")
-            st.info("You already accepted a task. Finish it before accepting another one.")
+        if not open_tasks:
+            st.caption("No open tasks right now.")
+        for t in open_tasks:
             with st.container(border=True):
-                st.markdown(
-                    f"**{active_task['title']}** ({active_task['category']}) — "
-                    f"by {active_task['creator_name']}  {status_badge(active_task['status'])}",
-                    unsafe_allow_html=True,
-                )
-                st.write(active_task["description"] or "")
-                st.write(f"💰 ₹{active_task['reward']:.0f}  |  ⏰ {active_task['deadline'] or 'Flexible'}")
-                if active_task["status"] == "ACCEPTED":
-                    if st.button("▶ Start Task", key=f"tbrowse_start_{active_task['id']}"):
-                        conn = get_conn()
-                        conn.execute(
-                            "UPDATE tasks SET status='IN_PROGRESS' WHERE id=? AND helper_id=? AND status='ACCEPTED'",
-                            (active_task["id"], user["id"]),
-                        )
+                st.markdown(f"**{t['title']}** ({t['category']}) — by {t['creator_name']}  {status_badge(t['status'])}", unsafe_allow_html=True)
+                st.caption(f"Task ID: **{t['task_code'] or task_code(t['id'])}**")
+                st.write(t["description"] or "")
+                st.write(f"💰 ₹{t['reward']:.0f}  |  ⏰ {t['deadline'] or 'Flexible'}")
+                if st.button("✅ Accept Task", key=f"tacc_{t['id']}"):
+                    conn = get_conn()
+                    active_check = conn.execute("SELECT id FROM tasks WHERE helper_id=? AND status IN ('ACCEPTED','IN_PROGRESS') LIMIT 1", (user['id'],)).fetchone()
+                    check = conn.execute("SELECT status FROM tasks WHERE id=?", (t['id'],)).fetchone()
+                    if active_check:
+                        st.error("You already have an active task. Complete it before accepting another.")
+                        conn.close()
+                    elif not check or check["status"] != "CREATED":
+                        st.error("This task is no longer available.")
+                        conn.close()
+                    else:
+                        updated = conn.execute("UPDATE tasks SET helper_id=?, status='ACCEPTED', accepted_at=? WHERE id=? AND status='CREATED'", (user["id"], now_iso(), t["id"]))
                         conn.commit()
                         conn.close()
-                        st.rerun()
-                elif active_task["status"] == "IN_PROGRESS":
-                    completion_code = st.text_input(
-                        "Enter completion code from task creator",
-                        key=f"tbrowse_comp_{active_task['id']}",
-                        max_chars=6,
-                    )
-                    if st.button("Verify & Complete", key=f"tbrowse_compbtn_{active_task['id']}"):
-                        ok, msg = verify_otp(
-                            active_task["creator_id"],
-                            "DELIVERY_COMPLETION",
-                            active_task["id"],
-                            completion_code,
-                        )
-                        if ok:
-                            conn = get_conn()
-                            conn.execute(
-                                "UPDATE tasks SET status='COMPLETED', completed_at=? WHERE id=? AND helper_id=?",
-                                (now_iso(), active_task["id"], user["id"]),
-                            )
-                            conn.commit()
-                            conn.close()
-                            update_transaction_status("TASK", active_task["id"], "RELEASED")
-                            add_unicoins(user["id"], 15, "Micro-task completed")
-                            recalc_trust_score(user["id"])
-                            notify(
-                                active_task["creator_id"],
-                                f"Your task '{active_task['title']}' was completed and verified.",
-                            )
-                            st.success("Task completed! You can now accept another task.")
-                            st.rerun()
-                        else:
-                            st.error(msg)
-        else:
-            open_tasks_conn = get_conn()
-            open_tasks = open_tasks_conn.execute(
-                "SELECT t.*, u.full_name creator_name FROM tasks t JOIN users u ON u.id=t.creator_id "
-                "WHERE t.status='CREATED' AND t.creator_id != ? ORDER BY t.id DESC",
-                (user["id"],),
-            ).fetchall()
-            open_tasks_conn.close()
-
-            if not open_tasks:
-                st.caption("No open tasks right now.")
-            else:
-                st.caption("Accept one task. Other tasks will be hidden until you finish it.")
-
-            for t in open_tasks:
-                with st.container(border=True):
-                    st.markdown(
-                        f"**{t['title']}** ({t['category']}) — by {t['creator_name']}  "
-                        f"{status_badge(t['status'])}",
-                        unsafe_allow_html=True,
-                    )
-                    st.write(t["description"] or "")
-                    st.write(f"💰 ₹{t['reward']:.0f}  |  ⏰ {t['deadline'] or 'Flexible'}")
-                    if st.button("✅ Accept Task", key=f"tacc_{t['id']}"):
-                        conn = get_conn()
-                        # Re-check the one-active-task rule at acceptance time so
-                        # a second task cannot be accepted after a rerun/race.
-                        active_check = conn.execute(
-                            "SELECT id FROM tasks WHERE helper_id=? AND status IN ('ACCEPTED','IN_PROGRESS') LIMIT 1",
-                            (user["id"],),
-                        ).fetchone()
-                        check = conn.execute("SELECT status FROM tasks WHERE id=?", (t["id"],)).fetchone()
-                        if active_check:
-                            conn.close()
-                            st.warning("You already have an active task. Finish it before accepting another one.")
-                        elif not check or check["status"] != "CREATED":
-                            conn.close()
-                            st.error("This task is no longer available.")
-                        else:
-                            conn.execute(
-                                "UPDATE tasks SET helper_id=?, status='ACCEPTED', accepted_at=? WHERE id=? AND status='CREATED'",
-                                (user["id"], now_iso(), t["id"]),
-                            )
-                            conn.commit()
+                        if updated.rowcount == 1:
                             create_transaction(t["creator_id"], user["id"], "TASK", t["id"], t["reward"], "HELD")
-                            conn.close()
-                            notify(t["creator_id"], f"{user['full_name']} accepted your task: {t['title']}.")
+                            notify(t["creator_id"], f"{user['full_name']} accepted your task: {t['title']} (Task ID {t['task_code'] or task_code(t['id'])}).")
                             st.rerun()
+                        else:
+                            st.error("This task is no longer available.")
 
     with tabs[2]:
         conn = get_conn()
@@ -2504,6 +1758,7 @@ def render_microtasks(user):
         for t in mine:
             with st.container(border=True):
                 st.markdown(f"**{t['title']}**  {status_badge(t['status'])}", unsafe_allow_html=True)
+                st.caption(f"Task ID: **{t['task_code'] or task_code(t['id'])}**")
                 if t["helper_id"]:
                     st.write(f"Helper: {t['helper_name']}")
                 if t["status"] == "COMPLETED" and t["helper_id"]:
@@ -2527,6 +1782,10 @@ def render_microtasks(user):
         for t in mine:
             with st.container(border=True):
                 st.markdown(f"**{t['title']}** — for {t['creator_name']}  {status_badge(t['status'])}", unsafe_allow_html=True)
+                st.caption(f"Task ID: **{t['task_code'] or task_code(t['id'])}**")
+                creator = user_by_id(t["creator_id"])
+                if creator and creator["phone"]:
+                    st.markdown(f"📞 **Contact requester:** [Call {creator['full_name']}](tel:{creator['phone']})")
                 if t["status"] == "ACCEPTED":
                     if st.button("▶ Start Task", key=f"tstart_{t['id']}"):
                         conn = get_conn()
@@ -2638,476 +1897,134 @@ def render_disputes(user):
 # 6.8 ADMIN DASHBOARD
 # -----------------------------------------------------------------------------
 
-def _admin_student_avg_rating(user_row):
-    return round(user_row["rating_sum"] / user_row["rating_count"], 1) if user_row["rating_count"] else 0
-
-
-def render_admin_student_profile(admin_user, student_id):
-    conn = get_conn()
-    student = conn.execute(
-        "SELECT * FROM users WHERE role='student' AND student_id=? LIMIT 1", (student_id,)
-    ).fetchone()
-    if not student:
-        conn.close()
-        st.error("Student profile could not be found.")
-        if st.button("← Back to Users", key="admin_profile_missing_back"):
-            st.session_state.pop("admin_profile_user_id", None); st.rerun()
-        return
-
-    sid = student["id"]
-    rating = _admin_student_avg_rating(student)
-    completed_tasks = conn.execute("SELECT COUNT(*) c FROM tasks WHERE helper_id=? AND status='COMPLETED'", (sid,)).fetchone()["c"]
-    active_borrowings = conn.execute(
-        "SELECT COUNT(*) c FROM borrowings WHERE borrower_id=? AND status NOT IN ('COMPLETED','REJECTED','CANCELLED')", (sid,)
-    ).fetchone()["c"]
-    completed_deliveries = conn.execute("SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (sid,)).fetchone()["c"]
-    earnings = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (sid,)).fetchone()["s"]
-    transaction_count = conn.execute("SELECT COUNT(*) c FROM transactions WHERE payer_id=? OR payee_id=?", (sid, sid)).fetchone()["c"]
-    unread_notifications = conn.execute("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0", (sid,)).fetchone()["c"]
-    dispute_count = conn.execute("SELECT COUNT(*) c FROM disputes WHERE reporter_id=?", (sid,)).fetchone()["c"]
-    conn.close()
-
-    st.markdown("## Student Profile")
-    if st.button("← Back to Users", key="admin_profile_back_top"):
-        st.session_state.pop("admin_profile_user_id", None); st.rerun()
-
-    status_html = ('<span class="uh-badge" style="background:#fee2e2;color:#991b1b;">🔴 Suspended</span>' if student["is_suspended"] else
-                   '<span class="uh-badge" style="background:#dcfce7;color:#166534;">🟢 Active</span>')
-    verification_html = ('<span class="uh-badge" style="background:#dcfce7;color:#166534;">✓ Verified</span>' if student["verified"] else
-                         '<span class="uh-badge" style="background:#fef3c7;color:#92400e;">Pending verification</span>')
-    st.markdown(f'''<div class="uh-admin-profile-card"><div class="uh-profile-header">
-        <div class="uh-profile-avatar">{str(student["full_name"] or "S")[0].upper()}</div>
-        <div><h2>{student["full_name"]}</h2><div class="uh-profile-sub">Student ID: <strong>{student["student_id"]}</strong></div>
-        <div class="uh-profile-status">{status_html} &nbsp; {verification_html}</div></div>
-    </div></div>''', unsafe_allow_html=True)
-
-    st.markdown("### Profile information")
-    info = st.columns(2)
-    info[0].markdown(f"**Email**\n\n{student['email'] or '—'}")
-    info[1].markdown(f"**Phone Number**\n\n{student['phone'] or '—'}")
-    info[0].markdown(f"**Registration Date**\n\n{str(student['created_at'])[:19].replace('T', ' ')}")
-    info[1].markdown(f"**Account Status**\n\n{'Suspended' if student['is_suspended'] else 'Active'}")
-
-    st.markdown("### Activity statistics")
-    stats = st.columns(7)
-    stats[0].metric("Trust Score", f"{student['trust_score']}/100")
-    stats[1].metric("Rating", f"⭐ {rating:.1f}" if rating else "—")
-    stats[2].metric("Tasks Completed", completed_tasks)
-    stats[3].metric("Active Borrowings", active_borrowings)
-    stats[4].metric("Completed Deliveries", completed_deliveries)
-    stats[5].metric("UniCoins", student["unicoins"])
-    stats[6].metric("Earnings", f"₹{earnings:.0f}")
-
-    st.markdown("### Account activity")
-    ac = st.columns(3)
-    ac[0].metric("Transactions", transaction_count)
-    ac[1].metric("Unread Notifications", unread_notifications)
-    ac[2].metric("Reported Disputes", dispute_count)
-
-    conn = get_conn()
-    tabs = st.tabs(["Delivery History", "Borrowing History", "Micro-Task History", "Transactions", "Ratings", "Notifications", "Disputes"])
-    with tabs[0]:
-        rows = conn.execute("SELECT r.*, u.full_name requester_name FROM requests r LEFT JOIN users u ON u.id=r.requester_id WHERE r.helper_id=? OR r.requester_id=? ORDER BY r.id DESC LIMIT 100", (sid, sid)).fetchall()
-        if not rows: st.info("No delivery history for this student.")
-        for r in rows:
-            role = "Requested" if r["requester_id"] == sid else "Completed as helper" if r["status"] == "COMPLETED" else "Helped with"
-            st.markdown(f"**#{r['id']} — {r['item_name']}** · {role} · {status_badge(r['status'])}<br>{r['pickup_location']} → {r['destination']} · ₹{r['reward']:.0f}<br><small>{str(r['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
-    with tabs[1]:
-        rows = conn.execute("SELECT b.*, i.item_name, owner.full_name owner_name, borrower.full_name borrower_name FROM borrowings b JOIN items i ON i.id=b.item_id JOIN users owner ON owner.id=b.owner_id JOIN users borrower ON borrower.id=b.borrower_id WHERE b.borrower_id=? OR b.owner_id=? ORDER BY b.id DESC LIMIT 100", (sid, sid)).fetchall()
-        if not rows: st.info("No borrowing history for this student.")
-        for b in rows:
-            role = "Borrower" if b["borrower_id"] == sid else "Owner"
-            st.markdown(f"**#{b['id']} — {b['item_name']}** · {role} · {status_badge(b['status'])}<br>Owner: {b['owner_name']} · Borrower: {b['borrower_name']}<br><small>Created {str(b['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
-    with tabs[2]:
-        rows = conn.execute("SELECT t.*, creator.full_name creator_name, helper.full_name helper_name FROM tasks t JOIN users creator ON creator.id=t.creator_id LEFT JOIN users helper ON helper.id=t.helper_id WHERE t.creator_id=? OR t.helper_id=? ORDER BY t.id DESC LIMIT 100", (sid, sid)).fetchall()
-        if not rows: st.info("No micro-task history for this student.")
-        for t in rows:
-            role = "Creator" if t["creator_id"] == sid else "Helper"
-            st.markdown(f"**#{t['id']} — {t['title']}** · {role} · {status_badge(t['status'])}<br>Creator: {t['creator_name']} · Helper: {t['helper_name'] or 'Unassigned'} · ₹{t['reward']:.0f}<br><small>{str(t['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
-    with tabs[3]:
-        rows = conn.execute("SELECT * FROM transactions WHERE payer_id=? OR payee_id=? ORDER BY id DESC LIMIT 100", (sid, sid)).fetchall()
-        if not rows: st.info("No transactions for this student.")
-        for tx in rows:
-            role = "Paid" if tx["payer_id"] == sid else "Received"
-            st.markdown(f"**#{tx['id']} — ₹{tx['amount']:.0f}** · {role} · {tx['related_type']} #{tx['related_id']} · {status_badge(tx['status'])}<br><small>{str(tx['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
-    with tabs[4]:
-        rows = conn.execute("SELECT r.*, u.full_name rater_name FROM ratings r JOIN users u ON u.id=r.rater_id WHERE r.ratee_id=? ORDER BY r.id DESC LIMIT 100", (sid,)).fetchall()
-        if not rows: st.info("No ratings received by this student.")
-        for r in rows:
-            st.markdown(f"**{'⭐' * r['stars']}** · from {r['rater_name']} · {r['transaction_type']} #{r['transaction_id']}")
-            if r["review"]: st.caption(r["review"])
-            st.divider()
-    with tabs[5]:
-        rows = conn.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 100", (sid,)).fetchall()
-        if not rows: st.info("No notifications for this student.")
-        for n in rows:
-            st.markdown(f"{'🔵' if not n['is_read'] else '⚪'} {n['message']}  \n<small>{str(n['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
-    with tabs[6]:
-        rows = conn.execute("SELECT * FROM disputes WHERE reporter_id=? ORDER BY id DESC LIMIT 100", (sid,)).fetchall()
-        if not rows: st.info("No disputes reported by this student.")
-        for d in rows:
-            st.markdown(f"**#{d['id']} — {d['category']}** · {d['transaction_type']} #{d['transaction_id']} · {status_badge(d['status'])}<br>{d['description'] or ''}<br><small>{str(d['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
-    conn.close()
-
-    action_col, back_col = st.columns([1, 1])
-    if student["is_suspended"]:
-        if action_col.button("Unsuspend User", key=f"profile_unsuspend_{sid}", use_container_width=True):
-            conn = get_conn(); conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (sid,)); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (admin_user["id"], "UNSUSPEND_USER", sid, "", now_iso())); conn.commit(); conn.close(); st.success("User unsuspended successfully."); st.rerun()
-    else:
-        if action_col.button("Suspend User", key=f"profile_suspend_{sid}", use_container_width=True):
-            conn = get_conn(); conn.execute("UPDATE users SET is_suspended=1 WHERE id=?", (sid,)); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (admin_user["id"], "SUSPEND_USER", sid, "", now_iso())); conn.commit(); conn.close(); st.success("User suspended successfully."); st.rerun()
-    if back_col.button("← Back to Users", key="admin_profile_back_bottom", use_container_width=True):
-        st.session_state.pop("admin_profile_user_id", None); st.rerun()
-
-
-def _admin_metric_card(icon, label, value, hint=""):
-    st.markdown(
-        f'<div class="uh-admin-metric"><div class="icon">{icon}</div>'
-        f'<div class="label">{label}</div><div class="value">{value}</div>'
-        f'<div class="hint">{hint}</div></div>', unsafe_allow_html=True
-    )
-
-
 def render_admin(user):
-    """Professional platform-management dashboard using the existing tables."""
     if user["role"] != "admin":
         st.error("Access denied. Admins only.")
         return
 
-    if st.session_state.get("admin_profile_user_id"):
-        render_admin_student_profile(user, st.session_state["admin_profile_user_id"])
-        return
-
+    st.markdown("## 🛡 Admin Dashboard")
     conn = get_conn()
     total_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student'").fetchone()["c"]
     verified_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND verified=1").fetchone()["c"]
-    active_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND is_suspended=0").fetchone()["c"]
-    suspended = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND is_suspended=1").fetchone()["c"]
     active_requests = conn.execute("SELECT COUNT(*) c FROM requests WHERE status NOT IN ('COMPLETED','CANCELLED')").fetchone()["c"]
-    total_requests = conn.execute("SELECT COUNT(*) c FROM requests").fetchone()["c"]
-    completed_deliveries = conn.execute("SELECT COUNT(*) c FROM requests WHERE status='COMPLETED'").fetchone()["c"]
-    active_borrowings = conn.execute("SELECT COUNT(*) c FROM borrowings WHERE status NOT IN ('COMPLETED','REJECTED','CANCELLED')").fetchone()["c"]
+    deliveries = conn.execute("SELECT COUNT(*) c FROM requests").fetchone()["c"]
+    borrowings = conn.execute("SELECT COUNT(*) c FROM borrowings").fetchone()["c"]
     completed_tasks = conn.execute("SELECT COUNT(*) c FROM tasks WHERE status='COMPLETED'").fetchone()["c"]
-    open_disputes = conn.execute("SELECT COUNT(*) c FROM disputes WHERE status IN ('OPEN','UNDER_REVIEW')").fetchone()["c"]
-    total_value = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE status IN ('RELEASED','COMPLETED','PAID')").fetchone()["s"] or 0
-    total_transactions = conn.execute("SELECT COUNT(*) c FROM transactions").fetchone()["c"]
-    unread_notifications = conn.execute("SELECT COUNT(*) c FROM notifications WHERE is_read=0").fetchone()["c"]
+    disputes_open = conn.execute("SELECT COUNT(*) c FROM disputes WHERE status='OPEN'").fetchone()["c"]
+    suspended = conn.execute("SELECT COUNT(*) c FROM users WHERE is_suspended=1").fetchone()["c"]
+    total_value = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions").fetchone()["s"]
 
-    st.markdown(
-        '<div class="uh-admin-shell"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap">'
-        '<div><div class="uh-admin-eyebrow">UNI HELP · PLATFORM CONTROL</div>'
-        '<div class="uh-admin-title">Admin Control Center</div>'
-        '<p class="uh-admin-subtitle">Monitor students, requests, safety, transactions and platform activity from one place.</p></div>'
-        '<div class="uh-admin-online"><span class="uh-admin-dot"></span> System Online</div></div></div>', unsafe_allow_html=True)
+    r1 = st.columns(4)
+    r1[0].metric("Total Users", total_users)
+    r1[1].metric("Verified Users", verified_users)
+    r1[2].metric("Active Requests", active_requests)
+    r1[3].metric("Total Deliveries", deliveries)
+    r2 = st.columns(4)
+    r2[0].metric("Borrowings", borrowings)
+    r2[1].metric("Completed Tasks", completed_tasks)
+    r2[2].metric("Open Disputes", disputes_open)
+    r2[3].metric("Suspended Users", suspended)
+    st.metric("Total Prototype Transaction Value (₹)", f"{total_value:.0f}")
 
-    cols = st.columns(4)
-    with cols[0]: _admin_metric_card("👥", "Students", total_users, f"{active_users} active")
-    with cols[1]: _admin_metric_card("📦", "Open Requests", active_requests, f"{completed_deliveries} deliveries completed")
-    with cols[2]: _admin_metric_card("⚠️", "Needs Attention", open_disputes + suspended, f"{open_disputes} disputes · {suspended} suspended")
-    with cols[3]: _admin_metric_card("💰", "Transaction Value", f"₹{total_value:.0f}", f"{total_transactions} transactions")
-
-    tabs = st.tabs(["Overview", "Users", "Requests", "Disputes", "Transactions", "Announcements", "System"])
+    st.divider()
+    tabs = st.tabs(["Users", "Disputes", "Transactions", "Requests", "Tasks"])
 
     with tabs[0]:
-        st.markdown('<div class="uh-admin-section">Platform health</div>', unsafe_allow_html=True)
-        health_cols = st.columns(4)
-        verification_rate = (verified_users / total_users * 100) if total_users else 0
-        completion_rate = (completed_deliveries / total_requests * 100) if total_requests else 0
-        borrow_rate = min(100, active_borrowings / max(total_users, 1) * 100)
-        task_rate = min(100, completed_tasks / max(total_users, 1) * 100)
-        health_cards = [
-            (health_cols[0], "✅", "Verification", f"{verified_users} of {total_users} students verified", verification_rate),
-            (health_cols[1], "📦", "Delivery completion", f"{completed_deliveries} completed of {total_requests}", completion_rate),
-            (health_cols[2], "🤝", "Active borrowings", f"{active_borrowings} currently active", borrow_rate),
-            (health_cols[3], "⚡", "Micro-tasks", f"{completed_tasks} completed", task_rate),
-        ]
-        for col, icon, title, copy, rate in health_cards:
-            with col:
-                st.markdown(f'<div class="uh-admin-panel"><div class="uh-admin-panel-title">{icon} {title}</div><div class="uh-admin-panel-copy">{copy}</div><div class="uh-admin-statline"><i style="width:{max(0,min(100,rate)):.1f}%"></i></div></div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="uh-admin-section">Needs attention</div>', unsafe_allow_html=True)
-        attention_cols = st.columns(2)
-        with attention_cols[0]:
-            if open_disputes:
-                st.markdown(f'<div class="uh-admin-alert">⚖️ <div><strong>{open_disputes} dispute(s) awaiting review</strong><small>Review evidence and resolve or reject them from Disputes.</small></div></div>', unsafe_allow_html=True)
-            else:
-                st.success("No open disputes require attention.")
-            if suspended:
-                st.markdown(f'<div class="uh-admin-alert">🛡️ <div><strong>{suspended} suspended student account(s)</strong><small>Review profiles if an account needs to be restored.</small></div></div>', unsafe_allow_html=True)
-        with attention_cols[1]:
-            if active_requests:
-                st.markdown(f'<div class="uh-admin-alert">📦 <div><strong>{active_requests} active request(s)</strong><small>Monitor request volume and statuses from Requests.</small></div></div>', unsafe_allow_html=True)
-            if unread_notifications:
-                st.markdown(f'<div class="uh-admin-alert">🔔 <div><strong>{unread_notifications} unread student notification(s)</strong><small>Use Announcements for platform-wide communication.</small></div></div>', unsafe_allow_html=True)
-
-        st.markdown('<div class="uh-admin-section">Recent admin activity</div>', unsafe_allow_html=True)
-        actions = conn.execute("""SELECT a.*, u.full_name AS admin_name FROM admin_actions a
-            JOIN users u ON u.id=a.admin_id ORDER BY a.id DESC LIMIT 8""").fetchall()
-        if actions:
-            for a in actions:
-                action_text = str(a["action"]).replace("_", " ").title()
-                st.markdown(f'<div class="uh-admin-activity"><div class="uh-admin-activity-icon">🛡️</div><div><strong>{action_text}</strong><span>{a["admin_name"]} · {str(a["created_at"])[:19]}</span></div></div>', unsafe_allow_html=True)
-        else:
-            st.info("No admin activity has been recorded yet.")
-
-    with tabs[1]:
-        st.markdown('<div class="uh-admin-search"><h3>🔎 Search student</h3><p>Find an exact student profile using Student ID.</p>', unsafe_allow_html=True)
-        search_col, button_col = st.columns([5, 1])
-        with search_col:
-            search_id = st.text_input("Student ID", placeholder="Enter Student ID…", label_visibility="collapsed", key="admin_student_search")
-        with button_col:
-            search_clicked = st.button("Search", use_container_width=True, type="primary", key="admin_student_search_btn")
-        st.markdown('</div>', unsafe_allow_html=True)
-        if search_clicked:
-            sid_value = search_id.strip()
-            if not sid_value:
-                st.warning("Enter a Student ID to search.")
-                st.session_state.pop("admin_search_result_id", None)
-            else:
-                result = conn.execute("SELECT id FROM users WHERE role='student' AND student_id=? LIMIT 1", (sid_value,)).fetchone()
-                if result:
-                    st.session_state["admin_search_result_id"] = result["id"]
-                else:
-                    st.session_state.pop("admin_search_result_id", None)
-                    st.warning("No student found with that Student ID.")
-
-        result_id = st.session_state.get("admin_search_result_id")
-        if result_id:
-            u = conn.execute("SELECT * FROM users WHERE id=? AND role='student'", (result_id,)).fetchone()
-            if u:
-                rating = _admin_student_avg_rating(u)
-                rating_text = f"⭐ {rating:.1f}" if rating else "—"
-                completed_tasks_u = conn.execute("SELECT COUNT(*) c FROM tasks WHERE helper_id=? AND status='COMPLETED'", (u["id"],)).fetchone()["c"]
-                active_borrow_u = conn.execute("SELECT COUNT(*) c FROM borrowings WHERE borrower_id=? AND status NOT IN ('COMPLETED','REJECTED','CANCELLED')", (u["id"],)).fetchone()["c"]
-                completed_delivery_u = conn.execute("SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (u["id"],)).fetchone()["c"]
-                earnings_u = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (u["id"],)).fetchone()["s"] or 0
-                status = "Suspended" if u["is_suspended"] else "Active"
-                verification = "Verified" if u["verified"] else "Unverified"
-                name = str(u["full_name"] or "S")
-                html = (
-                    '<div class="uh-admin-search-result"><div class="uh-profile-header">'
-                    f'<div class="uh-profile-avatar">{name[0].upper()}</div><div><h3>{name}</h3>'
-                    f'<div class="uh-profile-sub">Student ID: <strong>{u["student_id"]}</strong></div></div></div>'
-                    '<div class="uh-profile-grid">'
-                    f'<div><span>Email</span><strong>{u["email"]}</strong></div><div><span>Phone</span><strong>{u["phone"] or "—"}</strong></div>'
-                    f'<div><span>Verification</span><strong>{verification}</strong></div><div><span>Trust Score</span><strong>{u["trust_score"]}/100</strong></div>'
-                    f'<div><span>Rating</span><strong>{rating_text}</strong></div><div><span>Tasks Completed</span><strong>{completed_tasks_u}</strong></div>'
-                    f'<div><span>Active Borrowings</span><strong>{active_borrow_u}</strong></div><div><span>Completed Deliveries</span><strong>{completed_delivery_u}</strong></div>'
-                    f'<div><span>Earnings</span><strong>₹{earnings_u:.0f}</strong></div><div><span>UniCoins</span><strong>🪙 {u["unicoins"]}</strong></div>'
-                    f'<div><span>Account Status</span><strong>{status}</strong></div><div><span>Registered</span><strong>{str(u["created_at"])[:10]}</strong></div>'
-                    '</div></div>'
-                )
-                st.markdown(html, unsafe_allow_html=True)
-                if st.button("View Full Profile", key=f"view_profile_{u['id']}", type="primary", use_container_width=True):
-                    st.session_state["admin_profile_user_id"] = u["student_id"]
-                    st.session_state.pop("admin_search_result_id", None)
-                    st.rerun()
-
-        st.markdown('<div class="uh-admin-section">All students</div>', unsafe_allow_html=True)
         users = conn.execute("SELECT * FROM users WHERE role='student' ORDER BY id DESC").fetchall()
-        if not users:
-            st.info("No student accounts found.")
         for u in users:
             with st.container(border=True):
-                cols = st.columns([4.5, 1.1, 1.2, 1.2])
-                status_text = "🔴 Suspended" if u["is_suspended"] else "🟢 Active"
-                verification_text = "✓ Verified" if u["verified"] else "○ Unverified"
-                cols[0].markdown(f"**{u['full_name']}** · `{u['student_id'] or '—'}`  · {verification_text}  · {status_text}<br><span style='color:#71819a;font-size:.8rem'>{u['email']} · Trust {u['trust_score']}/100</span>", unsafe_allow_html=True)
-                if cols[1].button("Profile", key=f"profile_list_{u['id']}", use_container_width=True):
-                    st.session_state["admin_profile_user_id"] = u["student_id"]
-                    st.rerun()
+                cols = st.columns([3, 1, 1, 1])
+                cols[0].write(f"**{u['full_name']}** ({u['email']}) — Trust: {u['trust_score']}  "
+                               f"{'🟢 Verified' if u['verified'] else '🟡 Unverified'}  "
+                               f"{'🔴 Suspended' if u['is_suspended'] else ''}")
                 if u["is_suspended"]:
-                    if cols[2].button("Unsuspend", key=f"unsusp_{u['id']}", use_container_width=True):
+                    if cols[1].button("Unsuspend", key=f"unsusp_{u['id']}"):
                         conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (u["id"],))
-                        conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "UNSUSPEND_USER", u["id"], "", now_iso()))
-                        conn.commit(); st.rerun()
+                        conn.commit()
+                        conn.execute(
+                            "INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)",
+                            (user["id"], "UNSUSPEND_USER", u["id"], "", now_iso()),
+                        )
+                        conn.commit()
+                        st.rerun()
                 else:
-                    if cols[2].button("Suspend", key=f"susp_{u['id']}", use_container_width=True):
+                    if cols[1].button("Suspend", key=f"susp_{u['id']}"):
                         conn.execute("UPDATE users SET is_suspended=1 WHERE id=?", (u["id"],))
-                        conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "SUSPEND_USER", u["id"], "", now_iso()))
+                        conn.execute(
+                            "INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)",
+                            (user["id"], "SUSPEND_USER", u["id"], "", now_iso()),
+                        )
+                        conn.commit()
+                        st.rerun()
+
+    with tabs[1]:
+        disputes = conn.execute(
+            "SELECT d.*, u.full_name reporter_name FROM disputes d JOIN users u ON u.id=d.reporter_id ORDER BY d.id DESC"
+        ).fetchall()
+        for d in disputes:
+            with st.container(border=True):
+                st.markdown(f"**{d['category']}** — {d['transaction_type']} #{d['transaction_id']} "
+                            f"reported by {d['reporter_name']}  {status_badge(d['status'])}", unsafe_allow_html=True)
+                st.write(d["description"] or "")
+                if d["evidence_path"] and os.path.exists(d["evidence_path"]):
+                    st.image(d["evidence_path"], width=200)
+                if d["status"] in ("OPEN", "UNDER_REVIEW"):
+                    c1, c2, c3 = st.columns(3)
+                    if c1.button("Mark Under Review", key=f"dur_{d['id']}"):
+                        conn.execute("UPDATE disputes SET status='UNDER_REVIEW' WHERE id=?", (d["id"],))
+                        conn.commit(); st.rerun()
+                    if c2.button("Resolve", key=f"dres_{d['id']}"):
+                        conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE id=?", (now_iso(), d["id"]))
+                        conn.commit()
+                        conn.execute(
+                            "INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)",
+                            (user["id"], "RESOLVE_DISPUTE", d["id"], "", now_iso()),
+                        )
+                        conn.commit()
+                        st.rerun()
+                    if c3.button("Reject", key=f"drej_{d['id']}"):
+                        conn.execute("UPDATE disputes SET status='REJECTED', resolved_at=? WHERE id=?", (now_iso(), d["id"]))
                         conn.commit(); st.rerun()
 
     with tabs[2]:
-        st.markdown('<div class="uh-admin-section">Request operations</div>', unsafe_allow_html=True)
-        req_filter = st.selectbox("Filter", ["ALL", "CREATED", "ACCEPTED", "IN_TRANSIT", "DELIVERED", "COMPLETED", "CANCELLED", "DISPUTED"], key="admin_req_filter")
-        query = "SELECT r.*, ru.full_name requester_name, hu.full_name helper_name FROM requests r JOIN users ru ON ru.id=r.requester_id LEFT JOIN users hu ON hu.id=r.helper_id"
-        params = ()
-        if req_filter != "ALL": query += " WHERE r.status=?"; params = (req_filter,)
-        query += " ORDER BY r.id DESC LIMIT 100"
-        reqs = conn.execute(query, params).fetchall()
-        if not reqs: st.info("No requests match this filter.")
-        for r in reqs:
-            with st.container(border=True):
-                c1,c2,c3 = st.columns([4,2,1.2])
-                c1.markdown(f"**#{r['id']} · {r['item_name']}**<br><span style='color:#71819a;font-size:.72rem'>{r['requester_name']} → {r['helper_name'] or 'Unassigned'}</span>", unsafe_allow_html=True)
-                c2.markdown(status_badge(r["status"]), unsafe_allow_html=True)
-                c3.write(f"₹{r['reward']:.0f}")
+        txs = conn.execute("SELECT * FROM transactions ORDER BY id DESC LIMIT 100").fetchall()
+        for tx in txs:
+            st.markdown(f"#{tx['id']} — ₹{tx['amount']:.0f} — {tx['related_type']} #{tx['related_id']}  {status_badge(tx['status'])}", unsafe_allow_html=True)
 
     with tabs[3]:
-        st.markdown('<div class="uh-admin-section">Safety & dispute review</div>', unsafe_allow_html=True)
-        dispute_filter = st.selectbox("Status", ["ALL", "OPEN", "UNDER_REVIEW", "RESOLVED", "REJECTED"], key="admin_dispute_filter")
-        q = "SELECT d.*, u.full_name reporter_name FROM disputes d JOIN users u ON u.id=d.reporter_id"
-        pms = ()
-        if dispute_filter != "ALL": q += " WHERE d.status=?"; pms=(dispute_filter,)
-        q += " ORDER BY d.id DESC"
-        disputes = conn.execute(q,pms).fetchall()
-        if not disputes: st.success("No disputes match this filter.")
-        for d in disputes:
-            with st.container(border=True):
-                st.markdown(f"**{d['category']}** · {d['transaction_type']} #{d['transaction_id']} · {d['reporter_name']} {status_badge(d['status'])}", unsafe_allow_html=True)
-                st.write(d["description"] or "No description provided.")
-                if d["evidence_path"] and os.path.exists(d["evidence_path"]): st.image(d["evidence_path"], width=240)
-                if d["status"] in ("OPEN", "UNDER_REVIEW"):
-                    c1,c2,c3=st.columns(3)
-                    if c1.button("Mark Under Review", key=f"dur_{d['id']}"):
-                        conn.execute("UPDATE disputes SET status='UNDER_REVIEW' WHERE id=?", (d["id"],)); conn.commit(); st.rerun()
-                    if c2.button("Resolve", key=f"dres_{d['id']}"):
-                        conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE id=?", (now_iso(), d["id"])); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "RESOLVE_DISPUTE", d["id"], "", now_iso())); conn.commit(); st.rerun()
-                    if c3.button("Reject", key=f"drej_{d['id']}"):
-                        conn.execute("UPDATE disputes SET status='REJECTED', resolved_at=? WHERE id=?", (now_iso(), d["id"])); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "REJECT_DISPUTE", d["id"], "", now_iso())); conn.commit(); st.rerun()
+        reqs = conn.execute("SELECT * FROM requests ORDER BY id DESC LIMIT 100").fetchall()
+        for r in reqs:
+            st.markdown(f"#{r['id']} {r['item_name']}  {status_badge(r['status'])}", unsafe_allow_html=True)
 
     with tabs[4]:
-        st.markdown('<div class="uh-admin-section">Transaction monitoring</div>', unsafe_allow_html=True)
-        tx_filter = st.selectbox("Transaction status", ["ALL", "PENDING", "RELEASED", "COMPLETED", "PAID", "CANCELLED", "DISPUTED"], key="admin_tx_filter")
-        tq = "SELECT * FROM transactions"; tp = ()
-        if tx_filter != "ALL": tq += " WHERE status=?"; tp=(tx_filter,)
-        tq += " ORDER BY id DESC LIMIT 100"
-        txs = conn.execute(tq,tp).fetchall()
-        if not txs: st.info("No transactions match this filter.")
-        for tx in txs:
-            with st.container(border=True):
-                c1,c2,c3=st.columns([4,2,1.3])
-                c1.write(f"**#{tx['id']}** · {tx['related_type']} #{tx['related_id']}")
-                c2.markdown(status_badge(tx["status"]), unsafe_allow_html=True)
-                c3.write(f"₹{tx['amount']:.0f}")
-
-    with tabs[5]:
-        st.markdown('<div class="uh-admin-section">📣 Broadcast Center</div>', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="uh-admin-panel">'
-            '<div class="uh-admin-panel-title">📣 Message all students</div>'
-            '<div class="uh-admin-panel-copy">Send one announcement through UNI HELP notifications, email, or both. Uses the existing users, notifications and SMTP systems — no new database tables.</div>'
-            '</div>', unsafe_allow_html=True
-        )
-
-        audience = st.selectbox(
-            "Audience",
-            ["All active students", "All verified students", "All students"],
-            key="admin_announcement_audience"
-        )
-
-        delivery_cols = st.columns(2)
-        with delivery_cols[0]:
-            send_in_app = st.checkbox("🔔 UNI HELP notification", value=True, key="admin_send_in_app")
-        with delivery_cols[1]:
-            send_email_broadcast = st.checkbox("✉️ Email", value=True, key="admin_send_email")
-
-        email_subject = st.text_input(
-            "Email subject",
-            value="UNI HELP Announcement",
-            max_chars=120,
-            key="admin_announcement_subject",
-            disabled=not send_email_broadcast,
-            help="Used only when Email is selected."
-        )
-        message = st.text_area(
-            "Announcement message",
-            placeholder="Example: UNI HELP maintenance will take place tonight at 11 PM.",
-            max_chars=1000,
-            key="admin_announcement_message",
-            height=140
-        )
-
-        if send_email_broadcast and not EMAIL_CONFIGURED:
-            st.warning("✉️ Email delivery is not configured. Add the existing SMTP secrets to enable broadcast emails. UNI HELP notifications can still be sent.")
-
-        if st.button("🚀 Send Broadcast", type="primary", use_container_width=True, key="admin_send_announcement"):
-            clean = message.strip()
-            subject = email_subject.strip()
-
-            if not clean:
-                st.warning("Enter an announcement message first.")
-            elif not send_in_app and not send_email_broadcast:
-                st.warning("Select at least one delivery method.")
-            elif send_email_broadcast and not subject:
-                st.warning("Enter an email subject.")
+        st.markdown("### 🔎 Task control")
+        task_query = st.text_input("Search Task ID", placeholder="e.g. UNIH9877", key="admin_task_id")
+        if task_query.strip():
+            row = conn.execute(
+                "SELECT t.*, cu.full_name creator_name, hu.full_name helper_name FROM tasks t "
+                "JOIN users cu ON cu.id=t.creator_id LEFT JOIN users hu ON hu.id=t.helper_id "
+                "WHERE UPPER(t.task_code)=UPPER(?)", (task_query.strip(),)
+            ).fetchone()
+            if not row:
+                st.warning("No task found with this Task ID.")
             else:
-                if audience == "All active students":
-                    recipients = conn.execute("SELECT id, full_name, email FROM users WHERE role='student' AND is_suspended=0").fetchall()
-                elif audience == "All verified students":
-                    recipients = conn.execute("SELECT id, full_name, email FROM users WHERE role='student' AND verified=1 AND is_suspended=0").fetchall()
+                st.markdown(f"### Task **{row['task_code'] or task_code(row['id'])}**")
+                st.write(f"**{row['title']}** — {status_badge(row['status'])}", unsafe_allow_html=True)
+                st.write(f"Requester: {row['creator_name']}  |  Helper: {row['helper_name'] or 'Not assigned'}")
+                st.write(f"Reward: ₹{row['reward']:.0f}  |  Category: {row['category'] or 'Other'}")
+                if row['status'] == 'IN_PROGRESS':
+                    if row['admin_otp_bypass']:
+                        st.success("OTP-less completion is already enabled for this task.")
+                    elif st.button("🛡 Allow OTP-less completion", key=f"admin_bypass_{row['id']}"):
+                        conn.execute("UPDATE tasks SET admin_otp_bypass=1 WHERE id=? AND status='IN_PROGRESS'", (row['id'],))
+                        conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)",
+                                     (user['id'], 'TASK_OTP_BYPASS', row['id'], f"Task {row['task_code'] or task_code(row['id'])}: admin enabled OTP-less completion", now_iso()))
+                        conn.commit()
+                        notify(row['creator_id'], f"Admin enabled OTP-less completion for task {row['task_code'] or task_code(row['id'])}.")
+                        st.success("OTP-less completion enabled. The admin did not complete the task; the assigned helper must still complete it.")
+                        st.rerun()
                 else:
-                    recipients = conn.execute("SELECT id, full_name, email FROM users WHERE role='student'").fetchall()
-
-                now = now_iso()
-                notification_count = 0
-                email_success = 0
-                email_failed = 0
-
-                if send_in_app and recipients:
-                    conn.executemany(
-                        "INSERT INTO notifications (user_id, message, is_read, created_at) VALUES (?,?,0,?)",
-                        [(r["id"], clean, now) for r in recipients]
-                    )
-                    notification_count = len(recipients)
-
-                # Email each recipient using the already-configured SMTP helper.
-                # No credentials or message secrets are written to the database.
-                if send_email_broadcast and EMAIL_CONFIGURED:
-                    for recipient in recipients:
-                        email = (recipient["email"] or "").strip()
-                        if not email:
-                            email_failed += 1
-                            continue
-                        email_body = f"Hi {recipient['full_name'] or 'there'},\n\n{clean}\n\n- UNI HELP"
-                        if send_email(email, subject, email_body):
-                            email_success += 1
-                        else:
-                            email_failed += 1
-
-                details = (
-                    f"audience={audience}; recipients={len(recipients)}; "
-                    f"in_app={notification_count}; email_sent={email_success}; email_failed={email_failed}"
-                )
-                conn.execute(
-                    "INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)",
-                    (user["id"], "BROADCAST_ANNOUNCEMENT", None, details, now)
-                )
-                conn.commit()
-
-                if send_in_app:
-                    st.success(f"🔔 UNI HELP notification sent to {notification_count} student(s).")
-                if send_email_broadcast:
-                    if EMAIL_CONFIGURED:
-                        if email_failed:
-                            st.warning(f"✉️ Email broadcast finished: {email_success} sent, {email_failed} failed.")
-                        else:
-                            st.success(f"✉️ Email sent successfully to {email_success} student(s).")
-                    else:
-                        st.info("✉️ Email was not sent because SMTP is not configured. The in-app notification delivery was completed.")
-
-    with tabs[6]:
-        st.markdown('<div class="uh-admin-section">Platform diagnostics</div>', unsafe_allow_html=True)
-        checks = [
-            ("SQLite database", os.path.exists(DB_PATH), DB_PATH),
-            ("Email SMTP", EMAIL_CONFIGURED, "Configured" if EMAIL_CONFIGURED else "Not configured"),
-            ("QR storage", os.path.isdir(QR_DIR), QR_DIR),
-            ("Profile photo storage", os.path.isdir(PHOTOS_DIR), PHOTOS_DIR),
-        ]
-        for label, ok, detail in checks:
-            icon = "🟢" if ok else "🟠"
-            text = "READY" if ok else "CHECK CONFIG"
-            fg = "#047857" if ok else "#c2410c"
-            st.markdown(f'<div class="uh-admin-panel" style="margin-bottom:.5rem;display:flex;justify-content:space-between;align-items:center"><div><div class="uh-admin-panel-title">{icon} {label}</div><div class="uh-admin-panel-copy">{detail}</div></div><strong style="color:{fg};font-size:.68rem">{text}</strong></div>', unsafe_allow_html=True)
-        st.markdown('<div class="uh-admin-section">Database record counts</div>', unsafe_allow_html=True)
-        table_counts = []
-        for table in ["users","requests","items","borrowings","tasks","transactions","ratings","notifications","disputes","unicoin_transactions","locations","admin_actions"]:
-            try:
-                count = conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
-            except sqlite3.Error:
-                count = "Unavailable"
-            table_counts.append((table, count))
-        st.dataframe({"Table": [x[0] for x in table_counts], "Records": [x[1] for x in table_counts]}, use_container_width=True, hide_index=True)
+                    st.caption("OTP-less completion can only be enabled while the task is IN_PROGRESS.")
 
     conn.close()
 
@@ -3116,113 +2033,39 @@ def render_admin(user):
 # 7. MAIN ROUTER
 # =============================================================================
 
-def render_profile(user):
-    fresh = user_by_id(user["id"])
-    if not fresh:
-        st.error("Unable to load your profile right now.")
-        return
-    user = dict(fresh)
-    st.markdown("<div class='uh-page-kicker'>ACCOUNT</div>", unsafe_allow_html=True)
-    st.markdown("# My Profile")
-    st.caption("Manage your campus identity and profile photo.")
-    photo_path = user.get("profile_photo_path")
-    left, right = st.columns([1.15, 2.5])
-    with left:
-        if photo_path and os.path.exists(photo_path):
-            st.image(photo_path, width=150)
-        else:
-            initials = ''.join(part[0] for part in str(user['full_name']).split()[:2]).upper() or "U"
-            st.markdown(f'<div class="uh-profile-photo-placeholder">{initials}</div>', unsafe_allow_html=True)
-    with right:
-        safe_name = str(user['full_name']).replace('&','&amp;').replace('<','&lt;').replace('>','&gt;')
-        st.markdown(f"<div class='uh-profile-main-card'><div class='uh-profile-name'>{safe_name}</div><div class='uh-profile-id'>Student ID · <strong>{user['student_id'] or '—'}</strong></div><div class='uh-profile-badges'><span class='uh-profile-badge green'>✓ {'Verified' if user['verified'] else 'Verification pending'}</span><span class='uh-profile-badge blue'>Trust {user['trust_score']}/100</span></div></div>", unsafe_allow_html=True)
-    st.markdown("### Profile photo")
-    uploaded = st.file_uploader("Add or change your profile photo", type=["png", "jpg", "jpeg", "webp"], key="student_profile_photo")
-    if uploaded is not None and st.button("Save Profile Photo", type="primary", use_container_width=True):
-        try:
-            ext = os.path.splitext(uploaded.name)[1].lower() or ".jpg"
-            safe_name = f"profile_{user['id']}_{int(time.time())}{ext}"
-            path = os.path.join(PHOTOS_DIR, safe_name)
-            with open(path, "wb") as fh:
-                fh.write(uploaded.getbuffer())
-            conn = get_conn(); conn.execute("UPDATE users SET profile_photo_path=? WHERE id=?", (path, user["id"])); conn.commit(); conn.close()
-            st.session_state["user"] = dict(user_by_id(user["id"]))
-            st.success("Profile photo updated successfully."); st.rerun()
-        except Exception:
-            st.error("Unable to update your profile photo. Please try again.")
-    st.markdown("### Personal information")
-    info1, info2 = st.columns(2)
-    info1.markdown(f"<div class='uh-detail-card'><span>Full Name</span><strong>{safe_name}</strong></div>", unsafe_allow_html=True)
-    info2.markdown(f"<div class='uh-detail-card'><span>Student ID</span><strong>{user['student_id'] or '—'}</strong></div>", unsafe_allow_html=True)
-    info1.markdown(f"<div class='uh-detail-card'><span>Email</span><strong>{user['email']}</strong></div>", unsafe_allow_html=True)
-    info2.markdown(f"<div class='uh-detail-card'><span>Phone</span><strong>{user['phone'] or '—'}</strong></div>", unsafe_allow_html=True)
-    st.markdown("### Account shortcuts")
-    q1, q2, q3 = st.columns(3)
-    if q1.button("🔔 Notifications", use_container_width=True, key="profile_notifications"):
-        st.session_state["nav"] = "Notifications"; st.rerun()
-    if q2.button("⚖️ Disputes", use_container_width=True, key="profile_disputes"):
-        st.session_state["nav"] = "Disputes"; st.rerun()
-    if q3.button("🚪 Logout", use_container_width=True, key="profile_logout"):
-        st.session_state["user"] = None; st.session_state["auth_mode"] = "Home"; st.session_state["nav"] = "Dashboard"; st.rerun()
-    st.markdown("### Your UNI HELP stats")
-    avg = round(user["rating_sum"] / user["rating_count"], 1) if user["rating_count"] else 0
-    p1, p2, p3, p4 = st.columns(4)
-    p1.metric("Trust Score", f"{user['trust_score']}/100"); p2.metric("Rating", f"⭐ {avg:.1f}" if avg else "—"); p3.metric("UniCoins", f"🪙 {user['unicoins']}"); p4.metric("Member since", str(user['created_at'])[:10])
-
-
-def render_student_topbar(user):
-    """Premium compact student header with quick Dashboard + notification access."""
-    unread = get_notifications(user['id'], unread_only=True, limit=50)
-    current = st.session_state.get('nav', 'Dashboard')
-    title_map = {'Dashboard':'Home', 'Create':'Create', 'Help':'Need Help', 'Micro-Tasks':'Tasks', 'Leaders':'Leaders', 'Profile':'Profile', 'Delivery':'Delivery', 'Borrowing':'Borrowing', 'Wallet':'Wallet', 'Notifications':'Notifications'}
-    title = title_map.get(current, current)
-    first = str(user['full_name']).split()[0]
-    st.markdown("<div class='uh-student-shell'></div>", unsafe_allow_html=True)
-    st.markdown(f"""<div class='uh-mobile-header'>
-      <div class='uh-mobile-brand'><span>🎓</span><div><strong>UNI HELP</strong><small>{title}</small></div></div>
-      <div class='uh-mobile-actions'><div class='uh-mobile-greeting'>Hi, {first}</div></div>
-    </div>""", unsafe_allow_html=True)
-    c1,c2,c3 = st.columns([1.1, 4.2, 1.1])
-    with c1:
-        if current != 'Dashboard' and st.button('⌂', key='top_home', help='Dashboard', use_container_width=True):
-            st.session_state['nav']='Dashboard'; st.rerun()
-    with c3:
-        if st.button(f"🔔 {len(unread) if unread else ''}", key='student_notifications', use_container_width=True):
-            st.session_state['nav']='Notifications'; st.rerun()
-
 def render_sidebar(user):
+    st.sidebar.markdown("### 🎓 UNI HELP")
+    st.sidebar.write(f"**{user['full_name']}**")
+    st.sidebar.caption(user["email"])
+    if not user["verified"]:
+        st.sidebar.warning("Email not verified")
+
+    unread = len(get_notifications(user["id"], unread_only=True))
+    options = ["Dashboard", "Delivery", "Borrowing", "Micro-Tasks",
+               f"Notifications ({unread})" if unread else "Notifications",
+               "Wallet", "Disputes"]
     if user["role"] == "admin":
-        st.sidebar.markdown("### 🛡 UNI HELP ADMIN")
-        st.sidebar.write(f"**{user['full_name']}**")
-        st.sidebar.caption("Platform management")
-        st.session_state["nav"] = "Admin"
-        if st.sidebar.button("🚪 Logout", use_container_width=True):
+        options.append("Admin")
+
+    clean_map = {opt: opt.split(" (")[0] for opt in options}
+    current_clean = st.session_state.get("nav", "Dashboard")
+    display_current = next((o for o in options if clean_map[o] == current_clean), options[0])
+
+    choice = st.sidebar.radio("Navigate", options, index=options.index(display_current))
+    st.session_state["nav"] = clean_map[choice]
+
+    st.sidebar.divider()
+    if not user["verified"]:
+        if st.sidebar.button("📧 Verify Email"):
+            st.session_state["pending_verify_email"] = user["email"]
             st.session_state["user"] = None
-            st.session_state["auth_mode"] = "Home"
+            st.session_state["auth_mode"] = "Verify"
             st.rerun()
-        return
-    # Student navigation is rendered as a fixed mobile app bar below the page.
-    return
+    if st.sidebar.button("🚪 Logout"):
+        st.session_state["user"] = None
+        st.session_state["auth_mode"] = "Home"
+        st.rerun()
 
-
-def render_student_bottom_nav(user):
-    current = st.session_state.get('nav', 'Dashboard')
-    with st.container(key='uh_bottom_nav'):
-        cols = st.columns(5)
-        navs = [('⌂', 'Home', 'Dashboard'), ('☷', 'Tasks', 'Micro-Tasks'), ('＋', '', 'CREATE'), ('♕', 'Leaders', 'Leaders'), ('♙', 'Profile', 'Profile')]
-        for col, (icon, label, target) in zip(cols, navs):
-            with col:
-                if target == 'CREATE':
-                    st.markdown("<div class='uh-nav-plus'>", unsafe_allow_html=True)
-                    if st.button(icon, key='bottom_create', use_container_width=True):
-                        st.session_state['nav'] = 'Create'; st.rerun()
-                    st.markdown("</div>", unsafe_allow_html=True)
-                else:
-                    cls = 'uh-nav-active' if current == target else ''
-                    st.markdown(f"<div class='{cls}'>", unsafe_allow_html=True)
-                    if st.button(f"{icon}\n{label}", key=f'bottom_{target}', use_container_width=True):
-                        st.session_state['nav'] = target; st.rerun()
-                    st.markdown("</div>", unsafe_allow_html=True)
 
 def main():
     user = st.session_state.get("user")
@@ -3231,12 +2074,8 @@ def main():
         mode = st.session_state.get("auth_mode", "Home")
         if mode == "Register":
             render_register()
-        elif mode == "RegisterVerify":
-            render_register_verify()
         elif mode == "Login":
             render_login()
-        elif mode == "AdminLogin":
-            render_admin_login()
         elif mode == "Verify":
             render_verify()
         else:
@@ -3245,17 +2084,16 @@ def main():
 
     refresh_current_user()
     user = st.session_state["user"]
-    render_sidebar(user)
+    # If this student accepted a task, lock navigation to the active task until completion.
     if user["role"] != "admin":
-        render_student_topbar(user)
+        active_lock = get_active_helper_task(user["id"])
+        if active_lock:
+            st.session_state["nav"] = "Micro-Tasks"
+    render_sidebar(user)
 
     nav = st.session_state.get("nav", "Dashboard")
     if nav == "Dashboard":
         render_dashboard(user)
-    elif nav == "Create":
-        render_create_hub(user)
-    elif nav == "Help":
-        render_help_hub(user)
     elif nav == "Delivery":
         render_delivery(user)
     elif nav == "Borrowing":
@@ -3266,21 +2104,17 @@ def main():
         render_notifications(user)
     elif nav == "Wallet":
         render_wallet(user)
-    elif nav == "Profile":
-        render_profile(user)
-    elif nav == "Leaders":
-        render_leaders(user)
     elif nav == "Disputes":
         render_disputes(user)
     elif nav == "Admin":
         render_admin(user)
-    else:
+        else:
         render_dashboard(user)
-
-    if user["role"] != "admin":
-        render_student_bottom_nav(user)
 
 
 if __name__ == "__main__":
     main()
-  
+
+
+if __name__ == "__main__":
+    main()
