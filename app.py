@@ -689,7 +689,7 @@ def delete_student_account(student_user_id):
     conn.close()
 
 # =============================================================================
-# 4. CUSTOM HANDSHAKE LOADING ANIMATION & PREMIUM TYPOGRAPHY
+# 4. GLOBAL FLOATING ACTION BUTTON CSS & STYLING
 # =============================================================================
 
 st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", layout="centered")
@@ -717,7 +717,7 @@ h1, h2, h3, h4, h5, h6 {
 .main .block-container {
     max-width: 520px !important;
     padding-top: 1rem !important;
-    padding-bottom: 6rem !important;
+    padding-bottom: 7rem !important;
     padding-left: 0.6rem !important;
     padding-right: 0.6rem !important;
 }
@@ -797,6 +797,32 @@ h1, h2, h3, h4, h5, h6 {
     font-size: 1.4rem !important;
     font-weight: 800 !important;
     color: #00a884 !important;
+}
+
+/* --- TRUE GLOBAL FLOATING ACTION BUTTON (FAB) --- */
+.fab-btn-fixed {
+    position: fixed;
+    bottom: 30px;
+    right: 25px;
+    width: 60px;
+    height: 60px;
+    background: #00a884;
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    font-weight: bold;
+    box-shadow: 0 6px 20px rgba(0, 168, 132, 0.6);
+    z-index: 99999;
+    cursor: pointer;
+    text-decoration: none;
+    transition: transform 0.2s ease;
+}
+.fab-btn-fixed:hover {
+    transform: scale(1.08);
+    background: #028f71;
 }
 
 /* --- HANDSHAKE LOADING ANIMATION --- */
@@ -915,6 +941,8 @@ if "auth_mode" not in st.session_state:
     st.session_state["auth_mode"] = "student_login"
 if "admin_selected_student_id" not in st.session_state:
     st.session_state["admin_selected_student_id"] = None
+if "show_fab_menu" not in st.session_state:
+    st.session_state["show_fab_menu"] = False
 
 def show_simulated_dispatch_box():
     if "_last_email_simulated" in st.session_state:
@@ -1863,6 +1891,12 @@ def render_student_workspace(user):
 
     st.write("")
 
+    # Check session navigation tab
+    default_tab_index = 0
+    if st.session_state.get("student_active_tab") == "Inbox":
+        default_tab_index = 6
+        st.session_state.pop("student_active_tab", None)
+
     selected_tab = st.radio(
         "Navigation",
         ["Home", "Tasks", "Borrows", "Micro-Tasks", "Profile"],
@@ -1895,7 +1929,7 @@ def render_student_workspace(user):
         else:
             with st.container(border=True):
                 st.markdown("##### 📌 No Active Tasks")
-                st.caption("Need something? Create a request below using the + action menu.")
+                st.caption("Need something? Click the floating + button at the bottom-right to create a request.")
 
         st.write("")
         st.markdown("#### 📢 Campus Announcements")
@@ -2055,18 +2089,24 @@ def render_student_workspace(user):
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
-    # --- FLOATING ACTION BUTTON QUICK MENU ---
-    st.write("")
-    st.markdown("---")
-    with st.expander("➕ Create New Request (Quick Action Menu)", expanded=False):
-        c_opt1, c_opt2, c_opt3 = st.columns(3)
-        if c_opt1.button("📦 Delivery"):
+    # --- TRUE GLOBAL FLOATING ACTION BUTTON (FAB) & POPUP MENU ---
+    st.markdown(
+        """
+        <a href="#create-menu" class="fab-btn-fixed" title="Create Request">⊕</a>
+        """,
+        unsafe_allow_html=True
+    )
+
+    with st.expander("✨ Create New Request (+ Action Menu)", expanded=st.session_state.get("show_fab_menu", False)):
+        st.markdown("##### Select Request Type:")
+        f_col1, f_col2, f_col3 = st.columns(3)
+        if f_col1.button("📦 Delivery"):
             st.session_state["student_active_tab"] = "Tasks"
             st.rerun()
-        if c_opt2.button("🤝 Borrow"):
+        if f_col2.button("🤝 Borrow"):
             st.session_state["student_active_tab"] = "Borrows"
             st.rerun()
-        if c_opt3.button("🛠️ Task"):
+        if f_col3.button("🛠️ Task"):
             st.session_state["student_active_tab"] = "Micro-Tasks"
             st.rerun()
 
