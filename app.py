@@ -20,7 +20,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 
 # =============================================================================
-# 0. CONFIG / ENVIRONMENT
+# 0. CONFIG / ENVIRONMENT & CAMPUS DIRECTORY
 # =============================================================================
 
 load_dotenv()
@@ -38,6 +38,70 @@ PASSWORD_RESET_EXPIRY_HOURS = 2
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@unihelp.local")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "AdminUniHelp123!")
+
+# Official LPU Block-to-Room Directory
+CAMPUS_LOCATION_MAP = {
+    "Block 1A": ["Room 101", "Room 203"],
+    "Block 4": ["Room 108", "Room 208"],
+    "Block 6": ["Room 403", "Room 507", "Room 603", "Room 604", "Room 608"],
+    "Block 13": ["Room 105", "Room 107", "Room 109", "Room 110", "Room 304", "Room 306", "Room 308"],
+    "Block 14": [
+        "Room 107", "Room 110", "Room 301", "Room 301L", "Room 304", "Room 402", "Room 403", 
+        "Room 414", "Room 415", "Room 501", "Room 505", "Room 507", "Room 511", "Room 512", 
+        "Room 513", "Room 601", "Room 605", "Room 608", "Room 801", "Room 802", "Room 803", 
+        "Room 805", "Room 806", "Room 813"
+    ],
+    "Block 18": ["Room 106", "Room 108", "Room 202", "Room 205", "Room 406", "Room 512"],
+    "Block 20": ["Room 102", "Room 103", "Room 204", "Room 301", "Room 403", "Room 405", "Room 406", "Room 503", "Room 504"],
+    "Block 21": ["Room 105", "Room 107", "Room 108", "Room 205", "Room 209", "Room 301", "Room 302", "Room 303", "Room 405", "Room 407", "Room 408", "Room 409", "Room 506"],
+    "Block 25": ["Room 101", "Room 110A", "Room 404"],
+    "Block 26": [
+        "Room 102", "Room 102A", "Room 104", "Room 105A", "Room 108", "Room 209", "Room 301", 
+        "Room 302", "Room 303", "Room 304", "Room 305", "Room 306X", "Room 307", "Room 308B", 
+        "Room 401", "Room 404", "Room 405", "Room 406", "Room 504", "Room 504X", "Room 506", 
+        "Room 506Y", "Room 507A"
+    ],
+    "Block 27": ["Room 102A", "Room 404", "Room 407"],
+    "Block 28": ["Room 103", "Room 203", "Room 302", "Room 407", "Room 502A"],
+    "Block 29": ["Room 303", "Room 405"],
+    "Block 33": ["Room 303", "Room 306", "Room 403", "Room 405X", "Room 501", "Room 505"],
+    "Block 34": [
+        "Room 301", "Room 301A", "Room 303", "Room 306", "Room 402", "Room 403", "Room 404X", 
+        "Room 408", "Room 409", "Room 410", "Room 501", "Room 502", "Room 506X", "Room 602", 
+        "Room 604", "Room 605", "Room 607", "Room 608", "Room 701", "Room 705", "Room 707", "Room 809"
+    ],
+    "Block 36": [
+        "Room 103", "Room 203", "Room 208", "Room 402", "Room 407", "Room 409", "Room 501", 
+        "Room 502", "Room 608", "Room 701", "Room 702", "Room 703", "Room 704", "Room 802", 
+        "Room 802A", "Room 805", "Room 905"
+    ],
+    "Block 37": [
+        "Room 601", "Room 604", "Room 605", "Room 607", "Room 608", "Room 609", "Room 701", 
+        "Room 702", "Room 703", "Room 704", "Room 705", "Room 706", "Room 707", "Room 708", 
+        "Room 711", "Room 801", "Room 805", "Room 806", "Room 807", "Room 809", "Room 810", 
+        "Room 901", "Room 904", "Room 906", "Room 907"
+    ],
+    "Block 38": [
+        "Room 305", "Room 501", "Room 502", "Room 605C", "Room 605D", "Room 611", "Room 613", 
+        "Room 702", "Room 706", "Room 707", "Room 714", "Room 716", "Room 718", "Room 806", 
+        "Room 812", "Room 814", "Room 906A", "Room 911", "Room 913", "Room 915"
+    ],
+    "Block 55": [
+        "Room 204", "Room 301", "Room 305", "Room 307", "Room 308", "Room 402", "Room 403", 
+        "Room 504", "Room 509", "Room 701", "Room 703", "Room 710", "Room 802", "Room 804", "Room 805"
+    ],
+    "Block 55A": ["Room 502", "Level 1"],
+    "Block 56": [
+        "Room 308", "Room 402", "Room 403", "Room 404", "Room 406", "Room 407", "Room 408", 
+        "Room 501", "Room 504", "Room 506", "Room 601A", "Room 604", "Room 605", "Room 606", 
+        "Room 607", "Room 608", "Room 701A", "Room 703", "Room 705"
+    ],
+    "Block 57": [
+        "Room 103", "Room 104", "Room 207", "Room 303", "Room 304", "Room 306", "Room 307", 
+        "Room 308", "Room 309", "Room 406", "Room 409", "Room 501", "Room 506", "Room 708", "Room 804"
+    ],
+    "Block 57A": ["Room 304", "Room 402A", "Room 502"]
+}
 
 def get_config_val(key, default=""):
     try:
@@ -141,25 +205,22 @@ CREATE TABLE IF NOT EXISTS requests (
     completed_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS items (
+CREATE TABLE IF NOT EXISTS borrow_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_id INTEGER NOT NULL REFERENCES users(id),
-    item_name TEXT NOT NULL,
-    category TEXT,
-    condition TEXT,
-    deposit REAL NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'AVAILABLE',
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS borrowings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id INTEGER NOT NULL REFERENCES items(id),
-    owner_id INTEGER NOT NULL REFERENCES users(id),
     borrower_id INTEGER NOT NULL REFERENCES users(id),
+    lender_id INTEGER REFERENCES users(id),
+    item_name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    location TEXT NOT NULL,
+    description TEXT,
+    duration TEXT NOT NULL,
     deposit REAL NOT NULL DEFAULT 0,
+    reward REAL NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'REQUESTED',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    accepted_at TEXT,
+    pickup_verified_at TEXT,
+    returned_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -236,6 +297,15 @@ def parse_iso(s):
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
+
+    # Seamless column migration if location was not in older borrow_requests table
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(borrow_requests)").fetchall()}
+    if "location" not in cols:
+        try:
+            conn.execute("ALTER TABLE borrow_requests ADD COLUMN location TEXT DEFAULT 'Block 34 - Room 301'")
+        except Exception:
+            pass
+
     cur = conn.execute("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
     if cur.fetchone() is None:
         conn.execute(
@@ -255,7 +325,6 @@ def init_db():
                 now_iso(),
             ),
         )
-    # Check default platform pause state
     st_row = conn.execute("SELECT value FROM system_settings WHERE key = 'platform_paused'").fetchone()
     if st_row is None:
         conn.execute("INSERT INTO system_settings (key, value) VALUES ('platform_paused', 'false')")
@@ -431,7 +500,7 @@ def send_password_reset_email(user_row):
     return sent, msg, raw_token
 
 # =============================================================================
-# 3. QUERIES & INITIAL DATA
+# 3. QUERIES & SEED DATA
 # =============================================================================
 
 DEMO_STUDENTS = [
@@ -519,13 +588,12 @@ def update_transaction_status(related_type, related_id, status):
     conn.commit()
     conn.close()
 
-# Delete Helpers for Admin
 def delete_order(order_type, order_id):
     conn = get_conn()
     if order_type == "DELIVERY":
         conn.execute("DELETE FROM requests WHERE id = ?", (order_id,))
     elif order_type == "BORROWING":
-        conn.execute("DELETE FROM borrowings WHERE id = ?", (order_id,))
+        conn.execute("DELETE FROM borrow_requests WHERE id = ?", (order_id,))
     elif order_type == "TASK":
         conn.execute("DELETE FROM tasks WHERE id = ?", (order_id,))
     conn.execute("DELETE FROM transactions WHERE related_type = ? AND related_id = ?", (order_type, order_id))
@@ -804,19 +872,34 @@ def render_admin_login():
         st.write("")
 
         with st.form("admin_login_box"):
-            admin_user = st.text_input("Administrative Email", value=ADMIN_EMAIL)
-            admin_pwd = st.text_input("Admin Security Password", type="password", value="AdminUniHelp123!")
+            admin_user = st.text_input(
+                "Administrative Email", 
+                placeholder="Enter admin email (e.g., admin@unihelp.local)", 
+                key="admin_email_field"
+            )
+            admin_pwd = st.text_input(
+                "Admin Security Password", 
+                type="password", 
+                placeholder="Enter admin password", 
+                key="admin_pwd_field"
+            )
             submit_adm = st.form_submit_button("Enter Administration Workspace", use_container_width=True, type="primary")
 
         if submit_adm:
-            conn = get_conn()
-            row = conn.execute("SELECT * FROM users WHERE email=? AND role='admin'", (admin_user.strip().lower(),)).fetchone()
-            conn.close()
-            if row and check_password_hash(row["password_hash"], admin_pwd):
-                st.session_state["user"] = dict(row)
-                st.rerun()
+            if not admin_user.strip() or not admin_pwd.strip():
+                st.error("Please enter both admin email and password.")
             else:
-                st.error("Access denied. Invalid administrative credentials.")
+                conn = get_conn()
+                row = conn.execute(
+                    "SELECT * FROM users WHERE email=? AND role='admin'", 
+                    (admin_user.strip().lower(),)
+                ).fetchone()
+                conn.close()
+                if row and check_password_hash(row["password_hash"], admin_pwd):
+                    st.session_state["user"] = dict(row)
+                    st.rerun()
+                else:
+                    st.error("Access denied. Invalid administrative credentials.")
 
         st.write("")
         if st.button("← Return to Student Network", use_container_width=True):
@@ -932,20 +1015,19 @@ def render_admin_student_profile(admin_user, student_id):
 
     with h_tab2:
         borrows = conn.execute(
-            """SELECT b.*, i.item_name, o.full_name owner_name, bor.full_name borrower_name 
-               FROM borrowings b
-               JOIN items i ON i.id = b.item_id
-               JOIN users o ON o.id = b.owner_id
+            """SELECT b.*, bor.full_name borrower_name, len.full_name lender_name 
+               FROM borrow_requests b
                JOIN users bor ON bor.id = b.borrower_id
-               WHERE b.owner_id = ? OR b.borrower_id = ? ORDER BY b.id DESC""",
+               LEFT JOIN users len ON len.id = b.lender_id
+               WHERE b.borrower_id = ? OR b.lender_id = ? ORDER BY b.id DESC""",
             (student["id"], student["id"])
         ).fetchall()
         if not borrows:
             st.caption("No borrowing history for this student.")
         for b in borrows:
-            role = "Lender/Owner" if b["owner_id"] == student["id"] else "Borrower"
-            st.markdown(f"**Task ID: `{task_code(b['id'])}` — {b['item_name']}** (`{b['status']}`) — Role: **{role}** | Deposit: ₹{b['deposit']:.0f}")
-            st.caption(f"Owner: {b['owner_name']} | Borrower: {b['borrower_name']} | Date: {b['created_at'][:16]}")
+            role = "Borrower" if b["borrower_id"] == student["id"] else "Lender"
+            st.markdown(f"**Task ID: `{task_code(b['id'])}` — {b['item_name']}** (`{b['status']}`) — Role: **{role}** | Location: {b['location']}")
+            st.caption(f"Borrower: {b['borrower_name']} | Lender: {b['lender_name'] or 'Unassigned'} | Date: {b['created_at'][:16]}")
             st.divider()
 
     with h_tab3:
@@ -994,7 +1076,6 @@ def render_admin_workspace(user):
 
     st.divider()
 
-    # Emergency Kill-Switch Banner
     current_paused = is_platform_paused()
     with st.container(border=True):
         p_c1, p_c2 = st.columns([3.5, 1.5])
@@ -1038,7 +1119,7 @@ def render_admin_workspace(user):
     adm_tabs = st.tabs([
         "🔍 Search & Lookup Order",
         "📦 Delivery Orders", 
-        "🤝 Borrowing Orders", 
+        "🤝 Borrowing Requests", 
         "🛠 Micro-Task Orders", 
         "👥 Student Profiles", 
         "⚠️ Dispute Queue", 
@@ -1046,10 +1127,10 @@ def render_admin_workspace(user):
         "📢 Broadcast Notice"
     ])
 
-    # ---------------- TAB 1: INSTANT SEARCH BY TASK ID & MANAGE ----------------
+    # 1. Search Order
     with adm_tabs[0]:
         st.markdown("#### 🔍 Instant Order Search & Control")
-        st.caption("Look up any delivery, borrowing, or task directly by entering its UNIH Task ID (e.g., `UNIH0004` or `4`).")
+        st.caption("Look up any delivery, borrow request, or task directly by entering its UNIH Task ID (e.g., `UNIH0004` or `4`).")
 
         search_id_input = st.text_input("Enter Task ID", placeholder="e.g. UNIH0001 or 1").strip()
         parsed_id = parse_task_id(search_id_input) if search_id_input else None
@@ -1065,19 +1146,18 @@ def render_admin_workspace(user):
             ).fetchone()
 
             bor = conn.execute(
-                """SELECT b.*, i.item_name, o.full_name owner_name, bor.full_name borrower_name 
-                   FROM borrowings b
-                   JOIN items i ON i.id = b.item_id
-                   JOIN users o ON o.id = b.owner_id
-                   JOIN users bor ON bor.id = b.borrower_id
+                """SELECT b.*, bor.full_name borrower_name, len.full_name lender_name 
+                   FROM borrow_requests b
+                   JOIN users bor ON bor.id = b.borrower_id 
+                   LEFT JOIN users len ON len.id = b.lender_id 
                    WHERE b.id = ?""", (parsed_id,)
             ).fetchone()
 
             tsk = conn.execute(
                 """SELECT t.*, c.full_name creator_name, h.full_name helper_name 
                    FROM tasks t
-                   JOIN users c ON c.id = t.creator_id
-                   LEFT JOIN users h ON h.id = t.helper_id
+                   JOIN users c ON c.id = t.creator_id 
+                   LEFT JOIN users h ON h.id = t.helper_id 
                    WHERE t.id = ?""", (parsed_id,)
             ).fetchone()
             conn.close()
@@ -1121,26 +1201,26 @@ def render_admin_workspace(user):
             if bor:
                 found_any = True
                 with st.container(border=True):
-                    st.markdown(f"##### 🤝 Borrowing Order: `{task_code(bor['id'])}` — {bor['item_name']}")
-                    st.caption(f"Status: **{bor['status']}** | Owner: **{bor['owner_name']}** | Borrower: **{bor['borrower_name']}** | Deposit: ₹{bor['deposit']:.0f}")
+                    st.markdown(f"##### 🤝 Borrow Request: `{task_code(bor['id'])}` — {bor['item_name']}")
+                    st.caption(f"Status: **{bor['status']}** | Location: **{bor['location']}** | Borrower: **{bor['borrower_name']}** | Lender: **{bor['lender_name'] or 'Unassigned'}**")
 
                     b_c1, b_c2 = st.columns(2)
                     with b_c1:
-                        if bor["status"] not in ("COMPLETED", "REJECTED", "CANCELLED"):
-                            if st.button("Force Return & Release Deposit", key=f"srch_fc_bor_{bor['id']}"):
+                        if bor["status"] in ("ACCEPTED", "ACTIVE"):
+                            if st.button("Force Complete & Release Escrow", key=f"srch_fc_bor_{bor['id']}"):
                                 conn = get_conn()
-                                conn.execute("UPDATE borrowings SET status='COMPLETED' WHERE id=?", (bor["id"],))
-                                conn.execute("UPDATE items SET status='AVAILABLE' WHERE id=?", (bor["item_id"],))
+                                conn.execute("UPDATE borrow_requests SET status='COMPLETED', returned_at=? WHERE id=?", (now_iso(), bor["id"]))
                                 conn.commit(); conn.close()
                                 update_transaction_status("BORROW_DEPOSIT", bor["id"], "RELEASED")
+                                update_transaction_status("BORROW_REWARD", bor["id"], "RELEASED")
                                 log_admin_action(user["id"], "FORCE_COMPLETE_BORROWING", bor["id"])
-                                st.success("Borrowing returned.")
+                                st.success("Borrow request closed and funds released.")
                                 st.rerun()
                     with b_c2:
-                        if st.button("🗑️ Delete Order Permanently", key=f"del_srch_bor_{bor['id']}"):
+                        if st.button("🗑️ Delete Borrow Request", key=f"del_srch_bor_{bor['id']}"):
                             delete_order("BORROWING", bor["id"])
-                            log_admin_action(user["id"], "DELETE_ORDER", bor["id"], "Deleted borrow order")
-                            st.warning("Order deleted.")
+                            log_admin_action(user["id"], "DELETE_ORDER", bor["id"], "Deleted borrow request")
+                            st.warning("Request deleted.")
                             st.rerun()
 
             if tsk:
@@ -1171,7 +1251,7 @@ def render_admin_workspace(user):
             if not found_any:
                 st.warning(f"No order found matching Task ID `{task_code(parsed_id)}`.")
 
-    # ---------------- TAB 2: DELIVERY ORDERS ----------------
+    # 2. Delivery Orders
     with adm_tabs[1]:
         st.markdown("#### Manage Delivery Orders")
         status_filter = st.selectbox("Filter Status", ["ALL", "CREATED", "ACCEPTED", "PICKUP_VERIFIED", "DELIVERED", "COMPLETED", "CANCELLED"], key="deliv_filter")
@@ -1232,56 +1312,56 @@ def render_admin_workspace(user):
                         st.warning(f"Task {code} deleted.")
                         st.rerun()
 
-    # ---------------- TAB 3: BORROWING ORDERS ----------------
+    # 3. Borrowing Requests
     with adm_tabs[2]:
-        st.markdown("#### Manage Borrowing Orders & Assets")
+        st.markdown("#### Manage Borrow Requests")
         conn = get_conn()
-        borrowings = conn.execute(
-            """SELECT b.*, i.item_name, o.full_name owner_name, bor.full_name borrower_name 
-               FROM borrowings b
-               JOIN items i ON i.id = b.item_id
-               JOIN users o ON o.id = b.owner_id
-               JOIN users bor ON bor.id = b.borrower_id
+        borrow_reqs = conn.execute(
+            """SELECT b.*, bor.full_name borrower_name, len.full_name lender_name 
+               FROM borrow_requests b
+               JOIN users bor ON bor.id = b.borrower_id 
+               LEFT JOIN users len ON len.id = b.lender_id 
                ORDER BY b.id DESC"""
         ).fetchall()
         conn.close()
 
-        if not borrowings:
-            st.info("No borrowing orders logged.")
-        for b in borrowings:
+        if not borrow_reqs:
+            st.info("No borrow requests logged.")
+        for b in borrow_reqs:
             with st.container(border=True):
                 b_c1, b_c2 = st.columns([3, 1.8])
                 code = task_code(b["id"])
                 with b_c1:
-                    st.markdown(f"**Task ID: `{code}` — {b['item_name']}** — Deposit: ₹{b['deposit']:.0f} | Status: `{b['status']}`")
-                    st.caption(f"Lender: **{b['owner_name']}** | Borrower: **{b['borrower_name']}** | Initiated: {b['created_at'][:16]}")
+                    st.markdown(f"**Task ID: `{code}` — {b['item_name']}** ({b['category']}) | Status: `{b['status']}`")
+                    st.caption(f"Location: **{b['location']}** | Borrower: **{b['borrower_name']}** | Lender: **{b['lender_name'] or 'Unassigned'}**")
+                    st.caption(f"Duration: {b['duration']} | Deposit: ₹{b['deposit']:.0f} | Reward: ₹{b['reward']:.0f}")
                 with b_c2:
-                    if b["status"] not in ("COMPLETED", "REJECTED", "CANCELLED"):
-                        if st.button("Force Complete & Return Deposit", key=f"force_comp_bor_{b['id']}", use_container_width=True):
+                    if b["status"] in ("ACCEPTED", "ACTIVE"):
+                        if st.button("Force Complete & Release Escrow", key=f"force_comp_bor_{b['id']}", use_container_width=True):
                             conn = get_conn()
-                            conn.execute("UPDATE borrowings SET status='COMPLETED' WHERE id=?", (b["id"],))
-                            conn.execute("UPDATE items SET status='AVAILABLE' WHERE id=?", (b["item_id"],))
+                            conn.execute("UPDATE borrow_requests SET status='COMPLETED', returned_at=? WHERE id=?", (now_iso(), b["id"]))
                             conn.commit(); conn.close()
                             update_transaction_status("BORROW_DEPOSIT", b["id"], "RELEASED")
+                            update_transaction_status("BORROW_REWARD", b["id"], "RELEASED")
                             log_admin_action(user["id"], "FORCE_COMPLETE_BORROWING", b["id"])
-                            st.success(f"Borrowing {code} closed.")
+                            st.success(f"Borrow request {code} closed.")
                             st.rerun()
 
-                    if st.button("🗑️ Delete Order", key=f"del_bor_{b['id']}", use_container_width=True):
+                    if st.button("🗑️ Delete Request", key=f"del_bor_{b['id']}", use_container_width=True):
                         delete_order("BORROWING", b["id"])
-                        log_admin_action(user["id"], "DELETE_ORDER", b["id"], "Deleted borrowing order")
-                        st.warning(f"Borrowing {code} deleted.")
+                        log_admin_action(user["id"], "DELETE_ORDER", b["id"], "Deleted borrow request")
+                        st.warning(f"Borrow request {code} deleted.")
                         st.rerun()
 
-    # ---------------- TAB 4: MICRO-TASK ORDERS ----------------
+    # 4. Micro-Task Orders
     with adm_tabs[3]:
         st.markdown("#### Manage Micro-Task Gigs")
         conn = get_conn()
         tasks = conn.execute(
             """SELECT t.*, c.full_name creator_name, h.full_name helper_name 
                FROM tasks t
-               JOIN users c ON c.id = t.creator_id
-               LEFT JOIN users h ON h.id = t.helper_id
+               JOIN users c ON c.id = t.creator_id 
+               LEFT JOIN users h ON h.id = t.helper_id 
                ORDER BY t.id DESC"""
         ).fetchall()
         conn.close()
@@ -1313,7 +1393,7 @@ def render_admin_workspace(user):
                         st.warning(f"Task {code} deleted.")
                         st.rerun()
 
-    # ---------------- TAB 5: STUDENT DIRECTORY ----------------
+    # 5. Student Directory
     with adm_tabs[4]:
         st.markdown("#### Student Directory & Account Management")
         conn = get_conn()
@@ -1340,7 +1420,7 @@ def render_admin_workspace(user):
                         st.session_state["admin_selected_student_id"] = s["id"]
                         st.rerun()
 
-    # ---------------- TAB 6: DISPUTE QUEUE ----------------
+    # 6. Dispute Queue
     with adm_tabs[5]:
         st.markdown("#### Community Safety & Dispute Arbitration")
         conn = get_conn()
@@ -1377,7 +1457,7 @@ def render_admin_workspace(user):
                         st.info("Dispute dismissed.")
                         st.rerun()
 
-    # ---------------- TAB 7: ESCROW LEDGER ----------------
+    # 7. Escrow Ledger
     with adm_tabs[6]:
         st.markdown("#### Global Escrow & Financial Audit Ledger")
         conn = get_conn()
@@ -1398,7 +1478,7 @@ def render_admin_workspace(user):
             )
             st.divider()
 
-    # ---------------- TAB 8: BROADCAST NOTICE ----------------
+    # 8. Broadcast Notice
     with adm_tabs[7]:
         st.markdown("#### Campus-Wide Broadcast Center")
         st.caption("Send notifications directly to all student dashboards.")
@@ -1421,14 +1501,13 @@ def render_admin_workspace(user):
                 st.success(f"Announcement broadcasted to {len(students)} active students!")
 
 # =============================================================================
-# 7. STUDENT WORKSPACE
+# 7. STUDENT WORKSPACE WITH CASCADING BLOCK & ROOM SELECTOR
 # =============================================================================
 
 def render_student_workspace(user):
-    # Platform Paused Check
     if is_platform_paused():
         st.markdown("<h2 style='text-align:center;'>⏸️ UNI HELP Is Temporarily Paused</h2>", unsafe_allow_html=True)
-        st.warning("The campus administration has temporarily suspended micro-network activities for scheduled maintenance or campus safety. Please check back shortly.")
+        st.warning("The campus administration has temporarily suspended micro-network activities for maintenance. Please check back shortly.")
         st.write("")
         if st.button("Logout", key="paused_logout"):
             st.session_state["user"] = None
@@ -1454,7 +1533,7 @@ def render_student_workspace(user):
 
     tabs = st.tabs([
         "📦 Delivery Requests", 
-        "🤝 Borrowing Hub", 
+        "🤝 Borrow Requests", 
         "🛠 Micro-Tasks", 
         "💰 UniCoins & Wallet", 
         "👤 My Profile", 
@@ -1551,36 +1630,149 @@ def render_student_workspace(user):
                             st.success(f"Delivery {code} completed and reward released!")
                             st.rerun()
 
-    # 2. Borrowing Hub
+    # 2. Demand-Driven Borrow Requests (With LPU Cascading Location Selector)
     with tabs[1]:
-        st.markdown("#### Campus Borrowing Hub")
-        conn = get_conn()
-        items = conn.execute("SELECT i.*, u.full_name owner_name FROM items i JOIN users u ON u.id = i.owner_id WHERE i.status='AVAILABLE'").fetchall()
-        conn.close()
+        st.markdown("#### Demand-Driven Borrowing Hub")
+        st.caption("Need an item? Pick your campus block and room to post a borrow request.")
 
-        if not items:
-            st.info("No borrowable items available.")
-        for it in items:
-            with st.container(border=True):
-                code = task_code(it["id"])
-                st.markdown(f"**Item ID: `{code}` — {it['item_name']}** ({it['category']}) — Deposit: **₹{it['deposit']:.0f}**")
-                st.caption(f"Owner: **{it['owner_name']}** | Condition: {it['condition']}")
-                if it["owner_id"] != user["id"]:
-                    if st.button("Request to Borrow", key=f"req_borrow_{it['id']}"):
+        borrow_mode = st.radio("Borrow Mode", ["Live Campus Borrow Requests", "Post a Borrow Request"], horizontal=True, label_visibility="collapsed")
+
+        if borrow_mode == "Post a Borrow Request":
+            st.markdown("##### 📍 Select Your Campus Location")
+            
+            # Interactive Cascading Selection
+            loc_c1, loc_c2 = st.columns(2)
+            with loc_c1:
+                selected_block = st.selectbox(
+                    "Select Academic Block",
+                    options=list(CAMPUS_LOCATION_MAP.keys()),
+                    index=list(CAMPUS_LOCATION_MAP.keys()).index("Block 34") if "Block 34" in CAMPUS_LOCATION_MAP else 0,
+                    key="borrow_block_selector"
+                )
+            with loc_c2:
+                available_rooms = CAMPUS_LOCATION_MAP.get(selected_block, ["Room 101"])
+                selected_room = st.selectbox(
+                    "Select Room Number",
+                    options=available_rooms,
+                    key="borrow_room_selector"
+                )
+
+            structured_location = f"{selected_block} - {selected_room}"
+            st.info(f"📍 Request will be pinned to: **{structured_location}**")
+
+            with st.form("new_borrow_request_form"):
+                it_name = st.text_input("What item do you need?", placeholder="e.g. Casio Scientific Calculator FX-991EX")
+                cat = st.selectbox("Category", ["Electronics & Chargers", "Books & Study Material", "Lab Equipment", "Sports Gear", "Other"])
+                dur = st.text_input("Duration Needed", placeholder="e.g. 2 hours for exam / until 5 PM")
+                desc = st.text_area("Additional Notes / Bench / Seat details (Optional)", placeholder="e.g. Sitting on the 3rd row near the door")
+                c1, c2 = st.columns(2)
+                rew = c1.number_input("Reward offered to lender (₹)", min_value=0.0, value=25.0, step=5.0)
+                dep = c2.number_input("Security deposit you can provide (₹)", min_value=0.0, value=100.0, step=25.0)
+                sub_borrow = st.form_submit_button("Post Borrow Request", type="primary")
+
+                if sub_borrow:
+                    if not it_name.strip() or not dur.strip():
+                        st.error("Please enter the item name and duration needed.")
+                    else:
                         conn = get_conn()
-                        conn.execute("INSERT INTO borrowings (item_id, owner_id, borrower_id, deposit, status, created_at) VALUES (?,?,?,?,'REQUESTED',?)", (it["id"], it["owner_id"], user["id"], it["deposit"], now_iso()))
-                        new_bor_id = conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]
-                        conn.execute("UPDATE items SET status='BORROWED' WHERE id=?", (it["id"],))
+                        conn.execute(
+                            """INSERT INTO borrow_requests (borrower_id, item_name, category, location, description, duration, deposit, reward, status, created_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', ?)""",
+                            (user["id"], it_name.strip(), cat, structured_location, desc.strip(), dur.strip(), dep, rew, now_iso())
+                        )
+                        new_id = conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]
                         conn.commit(); conn.close()
-                        create_transaction(user["id"], it["owner_id"], "BORROW_DEPOSIT", new_bor_id, it["deposit"], "HELD")
-                        st.success(f"Borrowing initiated with Task ID: `{task_code(new_bor_id)}`!")
+                        st.success(f"Borrow request posted for **{structured_location}** with Task ID: `{task_code(new_id)}`!")
                         st.rerun()
+        else:
+            conn = get_conn()
+            b_requests = conn.execute(
+                """SELECT b.*, bor.full_name borrower_name, len.full_name lender_name 
+                   FROM borrow_requests b
+                   JOIN users bor ON bor.id = b.borrower_id 
+                   LEFT JOIN users len ON len.id = b.lender_id 
+                   ORDER BY b.id DESC"""
+            ).fetchall()
+            conn.close()
+
+            if not b_requests:
+                st.info("No borrow requests posted right now.")
+            for b in b_requests:
+                with st.container(border=True):
+                    code = task_code(b["id"])
+                    is_borrower = (b["borrower_id"] == user["id"])
+                    is_lender = (b["lender_id"] == user["id"])
+
+                    st.markdown(f"**Task ID: `{code}` — {b['item_name']}** ({b['category']}) | Status: `{b['status']}`")
+                    st.markdown(f"📍 **Location:** `{b['location']}`")
+                    st.caption(f"Borrower: **{b['borrower_name']}** | Lender: **{b['lender_name'] or 'Awaiting Lender'}**")
+                    st.write(f"⏱️ **Duration:** {b['duration']} | 💰 **Reward:** ₹{b['reward']:.0f} | 🛡️ **Deposit:** ₹{b['deposit']:.0f}")
+                    if b["description"]:
+                        st.caption(f"Notes: {b['description']}")
+
+                    if b["status"] == "REQUESTED" and not is_borrower:
+                        if st.button("🤝 I Can Lend This", key=f"lend_acc_{b['id']}"):
+                            conn = get_conn()
+                            conn.execute("UPDATE borrow_requests SET lender_id=?, status='ACCEPTED', accepted_at=? WHERE id=?", (user["id"], now_iso(), b["id"]))
+                            conn.commit()
+                            create_transaction(b["borrower_id"], user["id"], "BORROW_DEPOSIT", b["id"], b["deposit"], "HELD")
+                            create_transaction(b["borrower_id"], user["id"], "BORROW_REWARD", b["id"], b["reward"], "HELD")
+                            conn.close()
+                            notify(b["borrower_id"], f"{user['full_name']} accepted your borrow request {code}: {b['item_name']}")
+                            st.success(f"You agreed to lend this item at {b['location']}! Connect with the borrower to hand it over.")
+                            st.rerun()
+
+                    elif b["status"] == "ACCEPTED":
+                        if is_lender:
+                            st.info(f"Handover Point: **{b['location']}**. Provide this Handover OTP to the borrower:")
+                            if st.button("Generate Handover Code", key=f"b_h_code_{b['id']}"):
+                                code_otp = create_otp(user["id"], "BORROW_HANDOVER", b["id"])
+                                st.success(f"Handover Code: **{code_otp}**")
+                        elif is_borrower:
+                            st.markdown(f"##### Confirm Pickup at {b['location']}")
+                            entered = st.text_input("Enter Handover Code from Lender", key=f"b_h_in_{b['id']}")
+                            if st.button("Confirm Handover Received", key=f"sub_b_h_{b['id']}"):
+                                ok, msg = verify_otp(b["lender_id"], "BORROW_HANDOVER", b["id"], entered)
+                                if ok:
+                                    conn = get_conn()
+                                    conn.execute("UPDATE borrow_requests SET status='ACTIVE', pickup_verified_at=? WHERE id=?", (now_iso(), b["id"]))
+                                    conn.commit(); conn.close()
+                                    st.success("Handover confirmed! Borrowing is now ACTIVE.")
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
+
+                    elif b["status"] == "ACTIVE":
+                        if is_borrower:
+                            st.info("Item is currently with you. Give this return code to the owner upon returning:")
+                            if st.button("Generate Return Code", key=f"b_ret_code_{b['id']}"):
+                                code_otp = create_otp(user["id"], "BORROW_RETURN", b["id"])
+                                st.success(f"Return Code: **{code_otp}**")
+                        elif is_lender:
+                            st.markdown("##### Confirm Item Returned")
+                            entered_ret = st.text_input("Enter Return Code from Borrower", key=f"b_ret_in_{b['id']}")
+                            if st.button("Confirm Item Received Back", key=f"sub_b_ret_{b['id']}"):
+                                ok, msg = verify_otp(b["borrower_id"], "BORROW_RETURN", b["id"], entered_ret)
+                                if ok:
+                                    conn = get_conn()
+                                    conn.execute("UPDATE borrow_requests SET status='COMPLETED', returned_at=? WHERE id=?", (now_iso(), b["id"]))
+                                    conn.commit(); conn.close()
+                                    update_transaction_status("BORROW_DEPOSIT", b["id"], "RELEASED")
+                                    update_transaction_status("BORROW_REWARD", b["id"], "RELEASED")
+                                    add_unicoins(b["lender_id"], 15, f"Lent item {code}")
+                                    st.success("Item returned! Deposit and reward released from escrow.")
+                                    st.rerun()
+                                else:
+                                    st.error(msg)
 
     # 3. Micro-Tasks
     with tabs[2]:
         st.markdown("#### Micro-Tasks & Campus Gigs")
         conn = get_conn()
-        tasks = conn.execute("SELECT t.*, u.full_name creator_name FROM tasks t JOIN users u ON u.id = t.creator_id ORDER BY t.id DESC").fetchall()
+        tasks = conn.execute(
+            """SELECT t.*, u.full_name creator_name FROM tasks t 
+               JOIN users u ON u.id = t.creator_id ORDER BY t.id DESC"""
+        ).fetchall()
         conn.close()
 
         if not tasks:
@@ -1637,7 +1829,7 @@ def render_student_workspace(user):
             "SELECT COUNT(*) c FROM tasks WHERE helper_id=? AND status='COMPLETED'", (user["id"],)
         ).fetchone()["c"]
         active_borrows = conn.execute(
-            "SELECT COUNT(*) c FROM borrowings WHERE borrower_id=? AND status NOT IN ('COMPLETED', 'REJECTED')", (user["id"],)
+            "SELECT COUNT(*) c FROM borrow_requests WHERE borrower_id=? AND status IN ('ACCEPTED', 'ACTIVE')", (user["id"],)
         ).fetchone()["c"]
         conn.close()
 
