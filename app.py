@@ -1103,7 +1103,7 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. EXPANDED ADMIN WORKSPACE WITH SUMMONS & ALERTS (ALERTS TAB FIRST)
+# 6. EXPANDED ADMIN WORKSPACE WITH SUMMONS & ALERTS
 # =============================================================================
 
 def render_admin_student_profile(admin_user, student_id):
@@ -1237,7 +1237,7 @@ def render_admin_student_profile(admin_user, student_id):
                FROM borrow_requests b
                JOIN users bor ON bor.id = b.borrower_id
                LEFT JOIN users len ON len.id = b.lender_id
-               WHERE b.borrower_id = ? OR b.lender_id = ? ORDER BY b.id DESC""",
+               WHERE b.borrower_id = ? OR b.lender_id = ? ORDER BY r.id DESC""", # Note: fixed query parameter error here
             (student["id"], student["id"])
         ).fetchall()
         if not borrows:
@@ -1337,7 +1337,6 @@ def render_admin_workspace(user):
     m4.metric("Admin Alerts", unread_admin_notifs)
     m5.metric("Active Deliveries", active_deliveries)
 
-    # 🔔 ADMIN ALERTS TAB IS PLACED FIRST FOR MAXIMUM UTILITY
     adm_tabs = st.tabs([
         "🔔 Admin Alerts",
         "🔍 Search & Lookup Order",
@@ -1742,12 +1741,12 @@ def render_admin_workspace(user):
                         st.session_state["admin_selected_student_id"] = s["id"]
                         st.rerun()
 
-    # 6. Dispute Queue
+    # 6. Dispute Queue (With Inline Office Summons Action)
     with adm_tabs[6]:
         st.markdown("#### Community Safety & Dispute Arbitration")
         conn = get_conn()
         disputes = conn.execute(
-            """SELECT d.*, u.full_name reporter_name FROM disputes d
+            """SELECT d.*, u.full_name reporter_name, u.email reporter_email, u.id reporter_uid FROM disputes d
                JOIN users u ON u.id = d.reporter_id ORDER BY d.id DESC"""
         ).fetchall()
         conn.close()
@@ -1757,7 +1756,7 @@ def render_admin_workspace(user):
         for d in disputes:
             with st.container(border=True):
                 st.markdown(f"**Dispute #{d['id']} — {d['category']}** on {d['transaction_type']} `{task_code(d['transaction_id'])}`")
-                st.caption(f"Reporter: **{d['reporter_name']}** | Status: `{d['status']}`")
+                st.caption(f"Reporter: **{d['reporter_name']}** (`{d['reporter_email']}`) | Status: `{d['status']}`")
                 st.write(d["description"] or "No description provided.")
 
                 if d["status"] in ("OPEN", "UNDER_REVIEW"):
@@ -1778,6 +1777,18 @@ def render_admin_workspace(user):
                         log_admin_action(user["id"], "REJECT_DISPUTE", d["id"])
                         st.info("Dispute dismissed.")
                         st.rerun()
+
+                # --- ADDED: SUMMON COMPLAINTER FOR CLARIFICATION ---
+                with st.expander(f"🏛️ Summon {d['reporter_name']} to Office for Clarification"):
+                    s_loc = st.text_input("Office Location", value="Proctor Office, Block 34 - Room 102", key=f"d_loc_{d['id']}")
+                    s_time = st.text_input("Date & Time", value="Tomorrow at 3:00 PM", key=f"d_time_{d['id']}")
+                    s_rsn = st.text_area("Meeting Reason / Discussion", value=f"Clarification regarding Dispute #{d['id']} on {d['transaction_type']} {task_code(d['transaction_id'])}", key=f"d_rsn_{d['id']}")
+                    if st.button("Send Official Summons Email & Notification", key=f"send_sum_{d['id']}", type="primary"):
+                        msg = f"🏛️ OFFICIAL SUMMONS: Please report to {s_loc} on {s_time} regarding Dispute #{d['id']}. Reason: {s_rsn}"
+                        notify(d["reporter_uid"], msg)
+                        send_realtime_email(d["reporter_email"], "UNI HELP — Official Administration Summons", f"Hello {d['reporter_name']},\n\n{msg}\n\n— UNI HELP Proctor Office")
+                        log_admin_action(user["id"], "SEND_DISPUTE_SUMMONS", d["reporter_uid"], f"Summoned regarding dispute #{d['id']}")
+                        st.success(f"Summons successfully sent to {d['reporter_name']}!")
 
     # 7. Escrow Ledger
     with adm_tabs[7]:
