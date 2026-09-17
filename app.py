@@ -12,15 +12,11 @@ import secrets
 import string
 import smtplib
 import ssl
-import math
-import io
-import time
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
 import streamlit as st
 from werkzeug.security import generate_password_hash, check_password_hash
-import qrcode
 from dotenv import load_dotenv
 
 # =============================================================================
@@ -43,19 +39,19 @@ PASSWORD_RESET_EXPIRY_HOURS = 2
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@unihelp.local")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "AdminUniHelp123!")
 
-# SMTP setup (Uses Streamlit Secrets or Environment Variables)
-try:
-    SMTP_HOST = str(st.secrets.get("SMTP_HOST", os.getenv("SMTP_HOST", "smtp.gmail.com"))).strip()
-    SMTP_PORT = int(st.secrets.get("SMTP_PORT", os.getenv("SMTP_PORT", 587)))
-    SMTP_USERNAME = str(st.secrets.get("SMTP_USERNAME", os.getenv("SMTP_USERNAME", ""))).strip()
-    SMTP_PASSWORD = str(st.secrets.get("SMTP_PASSWORD", os.getenv("SMTP_PASSWORD", ""))).strip()
-    APP_URL = str(st.secrets.get("APP_URL", os.getenv("APP_URL", "http://localhost:8501"))).strip().rstrip("/")
-except Exception:
-    SMTP_HOST = "smtp.gmail.com"
-    SMTP_PORT = 587
-    SMTP_USERNAME = ""
-    SMTP_PASSWORD = ""
-    APP_URL = "http://localhost:8501"
+# SMTP Setup - Reads from Streamlit Secrets or Environment Variables
+def get_config_val(key, default=""):
+    try:
+        val = st.secrets.get(key, os.getenv(key, default))
+        return str(val).strip()
+    except Exception:
+        return str(os.getenv(key, default)).strip()
+
+SMTP_HOST = get_config_val("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(get_config_val("SMTP_PORT", "587"))
+SMTP_USERNAME = get_config_val("SMTP_USERNAME", "")
+SMTP_PASSWORD = get_config_val("SMTP_PASSWORD", "")
+APP_URL = get_config_val("APP_URL", "http://localhost:8501").rstrip("/")
 
 EMAIL_CONFIGURED = bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSWORD)
 
@@ -206,17 +202,6 @@ CREATE TABLE IF NOT EXISTS unicoin_transactions (
     reason TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
-
-CREATE TABLE IF NOT EXISTS qr_tokens (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    reference_type TEXT NOT NULL,
-    reference_id INTEGER NOT NULL,
-    purpose TEXT NOT NULL,
-    token TEXT UNIQUE NOT NULL,
-    used INTEGER NOT NULL DEFAULT 0,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
 """
 
 def now_iso():
@@ -251,31 +236,46 @@ def init_db():
     conn.close()
 
 # =============================================================================
-# 2. EMAIL & TOKEN UTILITIES
+# 2. EMAIL & TOKEN SERVICES (ROBUST DISPATCH)
 # =============================================================================
 
 def send_realtime_email(to_email, subject, body):
-    """Sends a real-time email via SMTP if configured; saves last status in session."""
+    """
+    Dispatches a real-time email. Returns (True, 'Success message')
+    or (False, 'Detailed error description').
+    """
     if not EMAIL_CONFIGURED:
         st.session_state["_last_email_simulated"] = (to_email, subject, body)
-        return True
+        return False, "SMTP is not fully configured (Missing username/password in secrets.toml). Check simulated preview below."
+
     try:
         msg = MIMEText(body, "plain", "utf-8")
         msg["Subject"] = subject
-        msg["From"] = SMTP_USERNAME
+        msg["From"] = f"UNI HELP <{SMTP_USERNAME}>"
         msg["To"] = to_email
-        context = ssl.create_default_context()
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.ehlo()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.sendmail(SMTP_USERNAME, [to_email], msg.as_string())
-        return True
+
+        if SMTP_PORT == 465:
+            # SSL Connection
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=12) as server:
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.sendmail(SMTP_USERNAME, [to_email], msg.as_string())
+        else:
+            # STARTTLS Connection (Typical for Port 587)
+            context = ssl.create_default_context()
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=12) as server:
+                server.ehlo()
+                server.starttls(context=context)
+                server.ehlo()
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.sendmail(SMTP_USERNAME, [to_email], msg.as_string())
+
+        return True, "Email successfully dispatched."
     except Exception as e:
-        st.session_state["_last_email_error"] = str(e)
+        err_msg = str(e)
+        st.session_state["_last_email_error"] = err_msg
         st.session_state["_last_email_simulated"] = (to_email, subject, body)
-        return False
+        return False, f"SMTP Dispatch Error: {err_msg}"
 
 def create_otp(user_id, purpose, reference_id=None):
     conn = get_conn()
@@ -349,7 +349,7 @@ def create_password_reset_token(user_id):
 def verify_and_consume_password_reset_token(raw_token):
     raw_token = (raw_token or "").strip()
     if not raw_token:
-        return None, "Empty token provided."
+        return None, "Empty reset token provided."
     conn = get_conn()
     rows = conn.execute("SELECT * FROM password_reset_tokens WHERE used = 0 ORDER BY id DESC").fetchall()
     matched = None
@@ -362,7 +362,8 @@ def verify_and_consume_password_reset_token(raw_token):
         return None, "Invalid or already used password reset link."
     if datetime.utcnow() > parse_iso(matched["expires_at"]):
         conn.close()
-        return None, "Password reset link has expired."
+        return None, "This password reset link has expired."
+    
     user_id = matched["user_id"]
     conn.execute("UPDATE password_reset_tokens SET used = 1 WHERE id = ?", (matched["id"],))
     conn.commit()
@@ -375,12 +376,11 @@ def send_login_otp_email(user_row):
     body = (
         f"Hello {user_row['full_name']},\n\n"
         f"Your login verification code for UNI HELP is: {otp}\n\n"
-        f"This code will expire in {OTP_EXPIRY_MINUTES} minutes. If you did not attempt to sign in, "
-        f"please secure your account immediately.\n\n"
-        f"— UNI HELP Security Team"
+        f"This code will expire in {OTP_EXPIRY_MINUTES} minutes. If you did not request this, "
+        f"please secure your university account.\n\n"
+        f"— UNI HELP Security"
     )
-    send_realtime_email(user_row["email"], subject, body)
-    return otp
+    return send_realtime_email(user_row["email"], subject, body)
 
 def send_password_reset_email(user_row):
     raw_token = create_password_reset_token(user_row["id"])
@@ -389,17 +389,16 @@ def send_password_reset_email(user_row):
     body = (
         f"Hello {user_row['full_name']},\n\n"
         f"We received a request to reset your password for your UNI HELP student account.\n\n"
-        f"Click the link below to set a new password:\n{reset_link}\n\n"
-        f"Or use your manual reset token:\n{raw_token}\n\n"
-        f"This link is valid for {PASSWORD_RESET_EXPIRY_HOURS} hours. If you did not make this request, "
-        f"you can safely ignore this email.\n\n"
-        f"— UNI HELP Support"
+        f"To choose a new password, click the link below:\n{reset_link}\n\n"
+        f"Or copy your reset token directly into the app:\n{raw_token}\n\n"
+        f"This link is valid for {PASSWORD_RESET_EXPIRY_HOURS} hours.\n\n"
+        f"— UNI HELP Security Team"
     )
-    send_realtime_email(user_row["email"], subject, body)
-    return raw_token
+    sent, msg = send_realtime_email(user_row["email"], subject, body)
+    return sent, msg, raw_token
 
 # =============================================================================
-# 3. SEEDING & RECORD HELPERS
+# 3. RECORD & HELPER QUERIES
 # =============================================================================
 
 DEMO_STUDENTS = [
@@ -421,27 +420,6 @@ def seed_demo_data():
                 (full_name, email, phone, sid, generate_password_hash("demo1234"), "student", 1, 65, 50, now_iso()),
             )
     conn.commit()
-
-    # Seed delivery requests if empty
-    if not conn.execute("SELECT id FROM requests LIMIT 1").fetchone():
-        s1 = conn.execute("SELECT id FROM users WHERE student_id='STU1001'").fetchone()["id"]
-        s2 = conn.execute("SELECT id FROM users WHERE student_id='STU1002'").fetchone()["id"]
-        conn.execute(
-            """INSERT INTO requests (requester_id, item_name, description, pickup_location,
-                destination, reward, preferred_time, status, created_at)
-               VALUES (?, 'Data Structures Textbook', 'Need library reserve copy brought to Block C',
-               'Central Library', 'Hostel Block C', 35, 'Today, by 6 PM', 'CREATED', ?)""",
-            (s1, now_iso()),
-        )
-        conn.execute(
-            """INSERT INTO requests (requester_id, item_name, description, pickup_location,
-                destination, reward, preferred_time, status, created_at)
-               VALUES (?, 'Lab Coat & Safety Goggles', 'Left behind in Chemistry Lab 3',
-               'Chemistry Department', 'Hostel Block A', 25, 'Evening', 'CREATED', ?)""",
-            (s2, now_iso()),
-        )
-        conn.commit()
-
     conn.close()
 
 def user_by_id(user_id):
@@ -500,7 +478,7 @@ def update_transaction_status(related_type, related_id, status):
     conn.close()
 
 # =============================================================================
-# 4. STREAMLIT PAGE CONFIG & GLOBAL STATE
+# 4. INITIALIZATION & ROUTING HOOKS
 # =============================================================================
 
 st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", layout="wide")
@@ -508,54 +486,48 @@ st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", 
 init_db()
 seed_demo_data()
 
-# Handle reset token from query parameter if present
-query_params = st.query_params
-if "reset_token" in query_params and "auth_mode" not in st.session_state:
-    st.session_state["auth_mode"] = "reset_password"
-    st.session_state["active_reset_token"] = query_params["reset_token"]
+# Handle URL ?reset_token= parameter smoothly
+try:
+    url_reset_token = st.query_params.get("reset_token")
+    if url_reset_token:
+        st.session_state["auth_mode"] = "reset_password"
+        st.session_state["active_reset_token"] = url_reset_token
+except Exception:
+    pass
 
 if "user" not in st.session_state:
     st.session_state["user"] = None
 if "auth_mode" not in st.session_state:
-    st.session_state["auth_mode"] = "student_login"  # 'student_login', 'student_otp', 'forgot_password', 'reset_password', 'register', 'admin_login'
+    st.session_state["auth_mode"] = "student_login"
 
-# Helper for simulated email display notification when SMTP is off
-def show_simulated_email_banner():
+# Helper for simulated email dispatch (useful if SMTP credentials are missing)
+def show_simulated_dispatch_box():
     if "_last_email_simulated" in st.session_state:
         to_addr, subj, body = st.session_state["_last_email_simulated"]
-        with st.expander(f"📬 Real-time Dispatch Preview (Sent to: {to_addr})", expanded=True):
-            st.caption(f"**Subject:** {subj}")
+        with st.expander("📬 Real-time Dispatch Preview (System Log)", expanded=True):
+            st.caption(f"**Recipient:** {to_addr} | **Subject:** {subj}")
             st.code(body, language="text")
 
 # =============================================================================
-# 5. AUTHENTICATION MODULES
+# 5. AUTHENTICATION SCREENS
 # =============================================================================
 
-# --- 5.1 STUDENT LOGIN (STEP 1: STUDENT ID + PASSWORD) ---
+# --- 5.1 CLEAN STUDENT LOGIN (STEP 1: CREDENTIAL CHECK) ---
 def render_student_login():
-    col1, col2, col3 = st.columns([1, 2.2, 1])
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("<h1 style='text-align:center;'>🎓 UNI HELP</h1>", unsafe_allow_html=True)
         st.markdown("<p style='text-align:center; color:#64748b;'>Verified Student-to-Student Campus Assistance Network</p>", unsafe_allow_html=True)
         st.write("")
 
-        # Demo Quick Select Helper
         with st.container(border=True):
-            st.markdown("##### ⚡ Quick Demo Accounts")
-            st.caption("Default password for all demo accounts: `demo1234`")
-            q_cols = st.columns(3)
-            q_cols[0].info("**STU1001**\nAarav S.")
-            q_cols[1].info("**STU1002**\nPriya N.")
-            q_cols[2].info("**STU1003**\nRohan M.")
+            st.markdown("##### 🔐 Student Sign In")
+            st.caption("Step 1 of 2: Enter your credentials to receive an email OTP")
 
-        with st.container(border=True):
-            st.markdown("##### 🔐 Student Authentication")
-            st.caption("Step 1 of 2: Verify Credentials")
-
-            sid = st.text_input("Student ID", placeholder="e.g. STU1001", key="login_sid")
+            sid = st.text_input("Student ID", placeholder="Enter your Student ID (e.g., STU1001)", key="login_sid")
             pwd = st.text_input("Password", type="password", placeholder="••••••••", key="login_pwd")
 
-            c_btn1, c_btn2 = st.columns([1.5, 1])
+            c_btn1, c_btn2 = st.columns([1.6, 1])
             with c_btn1:
                 send_otp_btn = st.button("Verify & Send Email OTP →", use_container_width=True, type="primary")
             with c_btn2:
@@ -573,9 +545,10 @@ def render_student_login():
                             st.error("This student account is currently suspended. Please contact the campus proctor.")
                         else:
                             st.session_state["pending_student_user"] = dict(user)
-                            # Generate and send real-time OTP to student's email
-                            send_login_otp_email(user)
+                            sent, err_desc = send_login_otp_email(user)
                             st.session_state["auth_mode"] = "student_otp"
+                            if not sent:
+                                st.warning(err_desc)
                             st.rerun()
                     else:
                         st.error("Invalid Student ID or password. Please try again.")
@@ -607,7 +580,7 @@ def render_student_otp():
         st.markdown("### 📩 Security Check: Enter OTP")
         st.caption(f"Step 2 of 2: We sent a 6-digit real-time verification code to **{user['email']}**")
 
-        show_simulated_email_banner()
+        show_simulated_dispatch_box()
 
         otp_val = st.text_input("Enter 6-Digit Email OTP", max_chars=6, placeholder="123456", key="login_otp_input")
 
@@ -641,9 +614,9 @@ def render_forgot_password():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("### 🔑 Recover Account Password")
-        st.caption("Enter your Student ID or registered university email. UNI HELP will send a secure password reset link to your inbox.")
+        st.caption("Enter your Student ID or registered university email. UNI HELP will send a secure password reset link to your email address.")
 
-        identifier = st.text_input("Student ID or University Email", placeholder="STU1001 or aarav.sharma@student.university.edu")
+        identifier = st.text_input("Student ID or University Email", placeholder="e.g. STU1001 or aarav.sharma@student.university.edu")
 
         if st.button("Send Reset Link to Email", use_container_width=True, type="primary"):
             if not identifier.strip():
@@ -651,25 +624,34 @@ def render_forgot_password():
             else:
                 user = user_by_student_id_or_email(identifier)
                 if user:
-                    send_password_reset_email(user)
-                    st.success(f"A password reset link has been dispatched to **{user['email']}**.")
+                    sent, msg, raw_token = send_password_reset_email(user)
+                    st.session_state["recent_generated_reset_token"] = raw_token
+                    if sent:
+                        st.success(f"A password reset link has been dispatched to **{user['email']}**.")
+                    else:
+                        st.warning(f"Could not send live email: {msg}. You can test the token directly below.")
                 else:
-                    # Provide generic success message to prevent user enumeration
-                    st.info("If that account is registered in our system, a reset link has been sent.")
+                    # Generic response prevents ID enumeration
+                    st.info("If that account is registered in UNI HELP, a reset link has been dispatched.")
 
-        show_simulated_email_banner()
+        show_simulated_dispatch_box()
 
+        # Direct token navigation fallback
         st.write("")
         st.divider()
-        st.markdown("##### Already have your reset token?")
-        manual_tok = st.text_input("Paste Password Reset Token", placeholder="e.g. 32-character token")
-        if st.button("Proceed with Token →", use_container_width=True):
-            if manual_tok.strip():
-                st.session_state["active_reset_token"] = manual_tok.strip()
+        st.markdown("##### Direct Password Reset")
+        st.caption("Click below or paste your token to change your password immediately:")
+
+        recent_tok = st.session_state.get("recent_generated_reset_token", "")
+        token_input = st.text_input("Reset Token", value=recent_tok, placeholder="Paste reset token here")
+
+        if st.button("Proceed to Password Reset →", use_container_width=True):
+            if token_input.strip():
+                st.session_state["active_reset_token"] = token_input.strip()
                 st.session_state["auth_mode"] = "reset_password"
                 st.rerun()
             else:
-                st.error("Please provide the token.")
+                st.error("Please enter a valid reset token.")
 
         if st.button("← Back to Student Login", use_container_width=True):
             st.session_state["auth_mode"] = "student_login"
@@ -682,6 +664,13 @@ def render_reset_password():
     with col2:
         st.markdown("### 🔒 Create New Password")
         st.caption("Enter and confirm your new account password.")
+
+        if not token:
+            st.error("No password reset token was provided.")
+            if st.button("Return to Login"):
+                st.session_state["auth_mode"] = "student_login"
+                st.rerun()
+            return
 
         new_pw = st.text_input("New Password", type="password", placeholder="At least 6 characters")
         confirm_pw = st.text_input("Confirm New Password", type="password", placeholder="Repeat new password")
@@ -701,6 +690,7 @@ def render_reset_password():
                     notify(user_id, "Your UNI HELP password was updated successfully.")
                     st.success("Your password has been reset! Please sign in with your new credentials.")
                     st.session_state.pop("active_reset_token", None)
+                    st.session_state.pop("recent_generated_reset_token", None)
                     st.session_state.pop("_last_email_simulated", None)
                     st.session_state["auth_mode"] = "student_login"
                     st.rerun()
@@ -787,7 +777,7 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. ADMIN WORKSPACE (COMPLETELY SEPARATE)
+# 6. ADMIN WORKSPACE (COMPLETELY SEPARATED)
 # =============================================================================
 
 def render_admin_workspace(user):
@@ -906,7 +896,7 @@ def render_student_workspace(user):
     st.write("")
     tabs = st.tabs(["📦 Delivery Requests", "🤝 Borrowing Hub", "🛠 Micro-Tasks", "💰 UniCoins & Wallet", "⚠️ Report Dispute"])
 
-    # 1. Delivery
+    # 1. Delivery Hub
     with tabs[0]:
         st.markdown("#### Campus Delivery Network")
         sub_mode = st.radio("Delivery Mode", ["Active Requests", "Post a Delivery Request"], horizontal=True, label_visibility="collapsed")
@@ -989,7 +979,7 @@ def render_student_workspace(user):
                             st.success("Delivery completed and reward released!")
                             st.rerun()
 
-    # 2. Borrowing
+    # 2. Borrowing Hub
     with tabs[1]:
         st.markdown("#### Campus Borrowing Hub")
         conn = get_conn()
@@ -1012,7 +1002,7 @@ def render_student_workspace(user):
                         st.success("Request sent!")
                         st.rerun()
 
-    # 3. Tasks
+    # 3. Micro-Tasks
     with tabs[2]:
         st.markdown("#### Micro-Tasks & Campus Gigs")
         conn = get_conn()
@@ -1074,7 +1064,7 @@ def render_student_workspace(user):
                 st.rerun()
 
 # =============================================================================
-# 8. MAIN CONTROLLER & ROUTER
+# 8. MAIN CONTROLLER
 # =============================================================================
 
 def main():
@@ -1096,7 +1086,7 @@ def main():
             render_student_login()
         return
 
-    # Route based on role
+    # Role separation
     if user.get("role") == "admin":
         render_admin_workspace(user)
     else:
