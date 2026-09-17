@@ -509,6 +509,20 @@ def verify_otp(user_id, purpose, reference_id, submitted_otp):
         conn.execute("UPDATE otp_records SET attempts = attempts + 1 WHERE id = ?", (row["id"],))
         conn.commit()
         remaining = row["max_attempts"] - (row["attempts"] + 1)
+        
+        # Check if max attempts reached -> Trigger OTP Lockout & Admin Approval Escalation
+        if remaining <= 0:
+            conn.execute("UPDATE users SET is_suspended = 2 WHERE id = ?", (user_id,))
+            conn.commit()
+            u_info = conn.execute("SELECT full_name, student_id FROM users WHERE id = ?", (user_id,)).fetchone()
+            notify_admin(
+                "OTP_LOCKOUT",
+                u_info["student_id"] if u_info else str(user_id),
+                f"Student {u_info['full_name'] if u_info else user_id} locked out after 5 incorrect OTP attempts. Approval required."
+            )
+            conn.close()
+            return False, "Maximum incorrect OTP attempts reached. Your login request has been sent to the admin for manual approval."
+
         conn.close()
         return False, f"Invalid OTP code. {max(remaining, 0)} attempt(s) remaining."
 
@@ -583,7 +597,7 @@ def send_password_reset_email(user_row):
     return sent, msg, raw_token
 
 # =============================================================================
-# 3. QUERIES & SEED DATA (DEMO STUDENTS REMOVED)
+# 3. QUERIES & SEED DATA
 # =============================================================================
 
 def seed_demo_data():
@@ -689,7 +703,7 @@ def delete_student_account(student_user_id):
     conn.close()
 
 # =============================================================================
-# 4. GLOBAL FLOATING ACTION BUTTON CSS & STYLING
+# 4. CUSTOM HANDSHAKE LOADING ANIMATION & FIXED BOTTOM NAVIGATION CSS
 # =============================================================================
 
 st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", layout="centered")
@@ -769,30 +783,6 @@ h1, h2, h3, h4, h5, h6 {
     box-shadow: 0 0 0 2px rgba(0, 168, 132, 0.25) !important;
 }
 
-.stTabs [data-baseweb="tab-list"] {
-    background: #111b21 !important;
-    border-radius: 16px !important;
-    padding: 4px !important;
-    border: 1px solid rgba(255, 255, 255, 0.06) !important;
-    gap: 4px !important;
-}
-
-.stTabs [data-baseweb="tab"] {
-    border-radius: 12px !important;
-    padding: 6px 10px !important;
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-    font-weight: 700 !important;
-    font-size: 0.82rem !important;
-    color: #8696a0 !important;
-    border: none !important;
-}
-
-.stTabs [aria-selected="true"] {
-    background: #00a884 !important;
-    color: #ffffff !important;
-    box-shadow: 0 4px 12px rgba(0, 168, 132, 0.3) !important;
-}
-
 [data-testid="stMetricValue"] {
     font-size: 1.4rem !important;
     font-weight: 800 !important;
@@ -802,17 +792,17 @@ h1, h2, h3, h4, h5, h6 {
 /* --- TRUE GLOBAL FLOATING ACTION BUTTON (FAB) --- */
 .fab-btn-fixed {
     position: fixed;
-    bottom: 30px;
+    bottom: 75px;
     right: 25px;
-    width: 60px;
-    height: 60px;
+    width: 56px;
+    height: 56px;
     background: #00a884;
     color: white;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 32px;
+    font-size: 30px;
     font-weight: bold;
     box-shadow: 0 6px 20px rgba(0, 168, 132, 0.6);
     z-index: 99999;
@@ -941,8 +931,8 @@ if "auth_mode" not in st.session_state:
     st.session_state["auth_mode"] = "student_login"
 if "admin_selected_student_id" not in st.session_state:
     st.session_state["admin_selected_student_id"] = None
-if "show_fab_menu" not in st.session_state:
-    st.session_state["show_fab_menu"] = False
+if "student_current_tab" not in st.session_state:
+    st.session_state["student_current_tab"] = "Home"
 
 def show_simulated_dispatch_box():
     if "_last_email_simulated" in st.session_state:
@@ -985,7 +975,9 @@ def render_student_login():
                     show_handshake_loader("Verifying Credentials...")
                     user = user_by_student_id_or_email(sid)
                     if user and check_password_hash(user["password_hash"], pwd):
-                        if user["is_suspended"]:
+                        if user["is_suspended"] == 2:
+                            st.warning("Your account is locked due to incorrect OTP attempts (5 fails). Waiting for admin approval or 1-hour auto-reset.")
+                        elif user["is_suspended"] == 1:
                             st.error("Account suspended. Contact proctor.")
                         elif not user["verified"]:
                             st.warning("Account is pending admin approval.")
@@ -1038,6 +1030,10 @@ def render_student_otp():
                 st.rerun()
             else:
                 st.error(msg)
+                if "Maximum incorrect OTP attempts" in msg:
+                    st.session_state.pop("pending_student_user", None)
+                    st.session_state["auth_mode"] = "student_login"
+                    st.rerun()
 
         if st.button("← Back to Sign In", use_container_width=True):
             show_handshake_loader("Returning...")
@@ -1193,7 +1189,7 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. EXPANDED ADMIN WORKSPACE (WITH ACCOUNT DELETION)
+# 6. EXPANDED ADMIN WORKSPACE (WITH ACCOUNT DELETION & OTP LOCKOUT REVIEW)
 # =============================================================================
 
 def render_admin_student_profile(admin_user, student_id):
@@ -1220,17 +1216,23 @@ def render_admin_student_profile(admin_user, student_id):
             st.write(f"**Email:** {student['email']}")
             st.write(f"**Phone:** {student['phone'] or 'Not provided'}")
             st.write(f"**Joined:** {student['created_at'][:10]}")
-            st.write(f"**Status:** `{'🔴 Suspended' if student['is_suspended'] else '🟢 Active'}`")
+            
+            status_desc = '🟢 Active'
+            if student['is_suspended'] == 1:
+                status_desc = '🔴 Suspended'
+            elif student['is_suspended'] == 2:
+                status_desc = '⚠️ OTP Locked (Needs Review)'
+            st.write(f"**Status:** `{status_desc}`")
             st.write(f"**Verified:** `{'✓ Yes' if student['verified'] else '○ No'}`")
 
             st.divider()
             st.markdown("##### Moderation Actions")
-            if student["is_suspended"]:
-                if st.button("Unsuspend Student Account", use_container_width=True):
+            if student["is_suspended"] > 0:
+                if st.button("Unlock / Unsuspend Account", use_container_width=True):
                     conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (student["id"],))
                     conn.commit()
-                    log_admin_action(admin_user["id"], "UNSUSPEND_USER", student["id"], "Account unsuspended by admin")
-                    st.success("User unsuspended.")
+                    log_admin_action(admin_user["id"], "UNSUSPEND_USER", student["id"], "Account unlocked by admin")
+                    st.success("User account unlocked.")
                     st.rerun()
             else:
                 if st.button("Suspend Student Account", use_container_width=True):
@@ -1248,11 +1250,11 @@ def render_admin_student_profile(admin_user, student_id):
                     st.rerun()
             else:
                 if st.button("Verify & Approve Student Account", use_container_width=True):
-                    conn.execute("UPDATE users SET verified=1 WHERE id=?", (student["id"],))
+                    conn.execute("UPDATE users SET verified=1, is_suspended=0 WHERE id=?", (student["id"],))
                     conn.commit()
                     log_admin_action(admin_user["id"], "GRANT_VERIFICATION", student["id"])
-                    notify(student["id"], "Your student account has been approved and verified by the administration!")
-                    st.success("Student approved & verified.")
+                    notify(student["id"], "Your student account and login lockout have been approved by administration!")
+                    st.success("Student approved & unlocked.")
                     st.rerun()
 
             st.divider()
@@ -1293,8 +1295,6 @@ def render_admin_student_profile(admin_user, student_id):
     st.write("")
     with st.container(border=True):
         st.markdown("##### 🏛️ Schedule In-Person Meeting / Office Summons")
-        st.caption("Request this student to meet an administrator or proctor for verification or complaint clarification.")
-        
         sum_loc = st.text_input("Office / Location", value="Proctor Office, Block 34 - Room 102")
         sum_time = st.text_input("Date & Time", value="Tomorrow at 3:00 PM")
         sum_reason = st.text_area("Reason for Meeting / Clarification", placeholder="e.g. Account verification or dispute clarification.")
@@ -1514,18 +1514,19 @@ def render_admin_workspace(user):
                             conn.close()
                             st.rerun()
 
-                elif n["category"] == "NEW_ACCOUNT":
+                elif n["category"] in ("NEW_ACCOUNT", "OTP_LOCKOUT"):
                     act_c1, act_c2 = st.columns(2)
                     with act_c1:
-                        if st.button("✅ Approve Student Registration", key=f"alert_appr_{n['id']}", use_container_width=True):
+                        btn_txt = "✅ Approve Registration" if n["category"] == "NEW_ACCOUNT" else "🔓 Unlock Account"
+                        if st.button(btn_txt, key=f"alert_appr_{n['id']}", use_container_width=True):
                             conn = get_conn()
-                            conn.execute("UPDATE users SET verified=1 WHERE student_id=?", (n["reference_id"],))
+                            conn.execute("UPDATE users SET verified=1, is_suspended=0 WHERE student_id=?", (n["reference_id"],))
                             conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
                             u_target = conn.execute("SELECT id FROM users WHERE student_id=?", (n["reference_id"],)).fetchone()
                             conn.commit()
                             conn.close()
                             if u_target:
-                                notify(u_target["id"], "Your student account registration has been approved by the admin!")
+                                notify(u_target["id"], "Your account / login lock has been approved and unlocked by admin!")
                             st.success(f"Approved student account {n['reference_id']}!")
                             st.rerun()
                     with act_c2:
@@ -1854,7 +1855,7 @@ def render_admin_workspace(user):
                 st.success("Broadcast sent!")
 
 # =============================================================================
-# 7. STUDENT WORKSPACE
+# 7. STUDENT WORKSPACE (FIXED BOTTOM NAVIGATION BAR)
 # =============================================================================
 
 def render_student_workspace(user):
@@ -1866,7 +1867,7 @@ def render_student_workspace(user):
             st.rerun()
         return
 
-    # --- TOP HEADER (WhatsApp Inspired) ---
+    # --- TOP HEADER ---
     h_col1, h_col2 = st.columns([3, 1])
     h_col1.markdown("### 🎓 UNI HELP")
 
@@ -1886,29 +1887,19 @@ def render_student_workspace(user):
 
     bell_label = f"🔔 ({unread_count})" if unread_count > 0 else "🔔"
     if h_col2.button(bell_label, key="top_notif_btn"):
-        st.session_state["student_active_tab"] = "Inbox"
+        st.session_state["student_current_tab"] = "Inbox"
         st.rerun()
 
     st.write("")
 
-    # Check session navigation tab
-    default_tab_index = 0
-    if st.session_state.get("student_active_tab") == "Inbox":
-        default_tab_index = 6
-        st.session_state.pop("student_active_tab", None)
+    # Initialize tab state if not present
+    if "student_current_tab" not in st.session_state:
+        st.session_state["student_current_tab"] = "Home"
 
-    selected_tab = st.radio(
-        "Navigation",
-        ["Home", "Tasks", "Borrows", "Micro-Tasks", "Profile"],
-        horizontal=True,
-        label_visibility="collapsed",
-        key="student_main_nav"
-    )
+    curr_tab = st.session_state["student_current_tab"]
 
-    st.write("")
-
-    # --- 1. HOME DASHBOARD ---
-    if selected_tab == "Home":
+    # --- RENDER MAIN CONTENT BASED ON CURRENT TAB ---
+    if curr_tab == "Home":
         st.markdown("#### ⚡ Live Campus Activity")
         
         conn = get_conn()
@@ -1944,8 +1935,7 @@ def render_student_workspace(user):
                 st.write(rn["message"])
                 st.caption(rn["created_at"][:16].replace("T", " "))
 
-    # --- 2. TASKS SECTION ---
-    elif selected_tab == "Tasks":
+    elif curr_tab == "Tasks":
         st.markdown("#### 📦 Delivery Tasks")
         sub_mode = st.radio("Delivery Action", ["Browse Deliveries", "Post Delivery"], horizontal=True, label_visibility="collapsed")
 
@@ -1989,8 +1979,7 @@ def render_student_workspace(user):
                             st.success("Task accepted!")
                             st.rerun()
 
-    # --- 3. BORROWS SECTION ---
-    elif selected_tab == "Borrows":
+    elif curr_tab == "Borrows":
         st.markdown("#### 🤝 Campus Borrowing Hub")
         b_mode = st.radio("Borrow Action", ["Browse Borrows", "Post Borrow"], horizontal=True, label_visibility="collapsed")
 
@@ -2037,8 +2026,7 @@ def render_student_workspace(user):
                             st.success("Lending agreement confirmed!")
                             st.rerun()
 
-    # --- 4. MICRO-TASKS SECTION ---
-    elif selected_tab == "Micro-Tasks":
+    elif curr_tab == "Micro-Tasks":
         st.markdown("#### 🛠️ Campus Micro-Tasks")
         conn = get_conn()
         tasks = conn.execute("SELECT t.*, u.full_name creator FROM tasks t JOIN users u ON u.id=t.creator_id ORDER BY t.id DESC").fetchall()
@@ -2053,8 +2041,7 @@ def render_student_workspace(user):
                 st.caption(f"Reward: **₹{t['reward']:.0f}** | Status: `{t['status']}`")
                 st.write(t["description"])
 
-    # --- 5. PROFILE SECTION ---
-    elif selected_tab == "Profile":
+    elif curr_tab == "Profile":
         st.markdown(f"#### 👤 {user['full_name']}")
         with st.container(border=True):
             st.write(f"**Student ID:** `{user['student_id']}`")
@@ -2089,26 +2076,81 @@ def render_student_workspace(user):
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
-    # --- TRUE GLOBAL FLOATING ACTION BUTTON (FAB) & POPUP MENU ---
+    elif curr_tab == "Inbox":
+        st.markdown("#### 🔔 Notifications & Inbox")
+        conn = get_conn()
+        notifs = conn.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
+        conn.close()
+
+        if not notifs:
+            st.info("No notifications.")
+        for n in notifs:
+            with st.container(border=True):
+                badge = "🔴 UNREAD" if not n["is_read"] else "⚪ Read"
+                st.markdown(f"**Notification** — `{badge}`")
+                st.write(n["message"])
+                st.caption(n["created_at"][:16].replace("T", " "))
+
+        if notifs and st.button("Mark All As Read"):
+            conn = get_conn()
+            conn.execute("UPDATE notifications SET is_read=1 WHERE user_id=?", (user["id"],))
+            conn.commit(); conn.close()
+            st.rerun()
+
+    # --- TRUE FIXED BOTTOM NAVIGATION BAR ---
     st.markdown(
-        """
-        <a href="#create-menu" class="fab-btn-fixed" title="Create Request">⊕</a>
+        f"""
+        <div class="fixed-bottom-nav">
+            <a href="?nav=Home" target="_self" class="nav-item {'active' if curr_tab == 'Home' else ''}">🏠<br>Home</a>
+            <a href="?nav=Tasks" target="_self" class="nav-item {'active' if curr_tab == 'Tasks' else ''}">📋<br>Tasks</a>
+            <a href="?nav=Borrows" target="_self" class="nav-item {'active' if curr_tab == 'Borrows' else ''}">🤝<br>Borrows</a>
+            <a href="?nav=Micro-Tasks" target="_self" class="nav-item {'active' if curr_tab == 'Micro-Tasks' else ''}">🛠️<br>Micro</a>
+            <a href="?nav=Profile" target="_self" class="nav-item {'active' if curr_tab == 'Profile' else ''}">👤<br>Profile</a>
+        </div>
         """,
         unsafe_allow_html=True
     )
 
-    with st.expander("✨ Create New Request (+ Action Menu)", expanded=st.session_state.get("show_fab_menu", False)):
-        st.markdown("##### Select Request Type:")
-        f_col1, f_col2, f_col3 = st.columns(3)
-        if f_col1.button("📦 Delivery"):
-            st.session_state["student_active_tab"] = "Tasks"
-            st.rerun()
-        if f_col2.button("🤝 Borrow"):
-            st.session_state["student_active_tab"] = "Borrows"
-            st.rerun()
-        if f_col3.button("🛠️ Task"):
-            st.session_state["student_active_tab"] = "Micro-Tasks"
-            st.rerun()
+    # Check query params for bottom nav clicks
+    try:
+        nav_param = st.query_params.get("nav")
+        if nav_param and nav_param in ["Home", "Tasks", "Borrows", "Micro-Tasks", "Profile"]:
+            if st.session_state["student_current_tab"] != nav_param:
+                st.session_state["student_current_tab"] = nav_param
+                st.rerun()
+    except Exception:
+        pass
+
+    # Floating Action Button (FAB)
+    st.markdown(
+        """
+        <div style="position: fixed; bottom: 75px; right: 20px; z-index: 99999;">
+        """,
+        unsafe_allow_html=True
+    )
+    
+    if st.button("⊕", key="fab_plus_btn"):
+        st.session_state["show_fab_modal"] = not st.session_state.get("show_fab_modal", False)
+        st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if st.session_state.get("show_fab_modal", False):
+        with st.container(border=True):
+            st.markdown("##### ➕ Create New Request")
+            fc1, fc2, fc3 = st.columns(3)
+            if fc1.button("📦 Delivery"):
+                st.session_state["student_current_tab"] = "Tasks"
+                st.session_state["show_fab_modal"] = False
+                st.rerun()
+            if fc2.button("🤝 Borrow"):
+                st.session_state["student_current_tab"] = "Borrows"
+                st.session_state["show_fab_modal"] = False
+                st.rerun()
+            if fc3.button("🛠️ Task"):
+                st.session_state["student_current_tab"] = "Micro-Tasks"
+                st.session_state["show_fab_modal"] = False
+                st.rerun()
 
 # =============================================================================
 # 8. MAIN CONTROLLER
