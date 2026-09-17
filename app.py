@@ -18,8 +18,10 @@ import time
 import re
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import streamlit as st
+import streamlit.components.v1 as components
 from werkzeug.security import generate_password_hash, check_password_hash
 import qrcode
 from dotenv import load_dotenv
@@ -119,7 +121,6 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'student',
     verified INTEGER NOT NULL DEFAULT 0,
-    approved INTEGER NOT NULL DEFAULT 0,
     is_suspended INTEGER NOT NULL DEFAULT 0,
     trust_score INTEGER NOT NULL DEFAULT 50,
     rating_sum INTEGER NOT NULL DEFAULT 0,
@@ -195,9 +196,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     reward REAL NOT NULL,
     deadline TEXT,
     category TEXT,
-    task_code TEXT UNIQUE,
-    admin_otp_bypass INTEGER NOT NULL DEFAULT 0,
-    accepted_at TEXT,
     status TEXT NOT NULL DEFAULT 'CREATED',
     created_at TEXT NOT NULL,
     completed_at TEXT
@@ -302,6 +300,15 @@ CREATE TABLE IF NOT EXISTS locations (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_type TEXT NOT NULL,
+    reference_id INTEGER NOT NULL,
+    sender_id INTEGER NOT NULL REFERENCES users(id),
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS admin_actions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     admin_id INTEGER NOT NULL REFERENCES users(id),
@@ -321,112 +328,19 @@ CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_r
 """
 
 
-def make_task_code(used_codes=None):
-    """Return a short, unique human-friendly task ID such as UNIH9877."""
-    used_codes = used_codes or set()
-    while True:
-        code = "UNIH" + "".join(secrets.choice(string.digits) for _ in range(4))
-        if code not in used_codes:
-            return code
-
-
-def get_public_app_url():
-    """Resolve the public app URL from Secrets, then from the current host."""
-    if APP_URL:
-        return APP_URL
-    try:
-        host = st.context.headers.get("Host", "").strip()
-        if host:
-            return f"https://{host}"
-    except Exception:
-        pass
-    return ""
-
-
-def get_active_task(user_id):
-    conn = get_conn()
-    row = conn.execute(
-        """SELECT t.*, u.full_name creator_name, u.email creator_email, u.phone creator_phone
-           FROM tasks t JOIN users u ON u.id=t.creator_id
-           WHERE t.helper_id=? AND t.status IN ('ACCEPTED','IN_PROGRESS')
-           ORDER BY COALESCE(t.accepted_at, t.created_at) DESC, t.id DESC LIMIT 1""",
-        (user_id,),
-    ).fetchone()
-    conn.close()
-    return row
-
-
-def delete_student_account(student_id):
-    """Delete a student and their dependent prototype data safely."""
-    conn = get_conn()
-    try:
-        uid = int(student_id)
-        # Remove child records first because the legacy schema does not cascade.
-        conn.execute("DELETE FROM ratings WHERE rater_id=? OR ratee_id=?", (uid, uid))
-        conn.execute("DELETE FROM disputes WHERE reporter_id=?", (uid,))
-        conn.execute("DELETE FROM notifications WHERE user_id=?", (uid,))
-        conn.execute("DELETE FROM otp_records WHERE user_id=?", (uid,))
-        conn.execute("DELETE FROM email_verification_tokens WHERE user_id=?", (uid,))
-        conn.execute("DELETE FROM locations WHERE reference_id IN (SELECT id FROM requests WHERE requester_id=? OR helper_id=?)", (uid, uid))
-        conn.execute("DELETE FROM locations WHERE reference_id IN (SELECT id FROM tasks WHERE creator_id=? OR helper_id=?)", (uid, uid))
-        conn.execute("DELETE FROM transactions WHERE payer_id=? OR payee_id=?", (uid, uid))
-        conn.execute("DELETE FROM borrowings WHERE owner_id=? OR borrower_id=? OR item_id IN (SELECT id FROM items WHERE owner_id=?)", (uid, uid, uid))
-        conn.execute("DELETE FROM items WHERE owner_id=?", (uid,))
-        conn.execute("DELETE FROM requests WHERE requester_id=? OR helper_id=?", (uid, uid))
-        conn.execute("DELETE FROM tasks WHERE creator_id=? OR helper_id=?", (uid, uid))
-        conn.execute("DELETE FROM admin_actions WHERE target_id=? AND action LIKE '%USER%'", (uid,))
-        conn.execute("DELETE FROM users WHERE id=? AND role='student'", (uid,))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
-def clear_borrowing_and_task_data():
-    """Admin maintenance: remove all borrowing and micro-task marketplace records."""
-    conn = get_conn()
-    try:
-        conn.execute("DELETE FROM borrowings")
-        conn.execute("DELETE FROM items")
-        conn.execute("DELETE FROM transactions WHERE related_type IN ('BORROW_DEPOSIT','TASK')")
-        conn.execute("DELETE FROM tasks")
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
     user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     if "profile_photo_path" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN profile_photo_path TEXT")
-    if "approved" not in user_columns:
-        conn.execute("ALTER TABLE users ADD COLUMN approved INTEGER NOT NULL DEFAULT 0")
-        # Preserve access for accounts that were already email-verified before
-        # admin approval was introduced. New registrations remain unapproved.
-        conn.execute("UPDATE users SET approved=1 WHERE role='admin' OR verified=1")
 
+    # Backward-compatible migration for existing UNI HELP databases.
+    # Older databases did not have tasks.accepted_at; adding it lets us keep
+    # the active-task experience without replacing or resetting existing data.
     task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
     if "accepted_at" not in task_columns:
         conn.execute("ALTER TABLE tasks ADD COLUMN accepted_at TEXT")
-    if "task_code" not in task_columns:
-        conn.execute("ALTER TABLE tasks ADD COLUMN task_code TEXT")
-    if "admin_otp_bypass" not in task_columns:
-        conn.execute("ALTER TABLE tasks ADD COLUMN admin_otp_bypass INTEGER NOT NULL DEFAULT 0")
-
-    # Give every existing task a short human-friendly UNI HELP ID.
-    existing = conn.execute("SELECT id FROM tasks WHERE task_code IS NULL OR TRIM(task_code)='' ORDER BY id").fetchall()
-    used_codes = {r[0] for r in conn.execute("SELECT task_code FROM tasks WHERE task_code IS NOT NULL AND TRIM(task_code)!=''").fetchall()}
-    for row in existing:
-        code = make_task_code(used_codes)
-        conn.execute("UPDATE tasks SET task_code=? WHERE id=?", (code, row["id"]))
-        used_codes.add(code)
 
     conn.commit()
     # Create a default admin account if none exists (demo convenience only).
@@ -543,8 +457,7 @@ def verify_otp(user_id, purpose, reference_id, submitted_otp):
 
 def create_email_verification_link(user_id):
     """Create a one-time email verification link for a student account."""
-    public_url = get_public_app_url()
-    if not public_url:
+    if not APP_URL:
         return None
     raw_token = secrets.token_urlsafe(32)
     token_hash = generate_password_hash(raw_token)
@@ -559,7 +472,7 @@ def create_email_verification_link(user_id):
     )
     conn.commit()
     conn.close()
-    return f"{public_url}/?verify_email_token={raw_token}"
+    return f"{APP_URL}/?verify_email_token={raw_token}"
 
 
 def verify_email_link_token(raw_token):
@@ -622,7 +535,12 @@ def send_email(to_email, subject, body):
 
 
 def deliver_otp(user_row, purpose, reference_id, context_label=""):
-    """Generate and email a real OTP. Email verification also includes a one-click link."""
+    """Generate an OTP, attempt email delivery, and return (sent, plaintext_otp).
+
+    The plaintext is returned so the UI can show it in DEMO mode or to a
+    requester who needs to share a task-completion code with their helper.
+    The database stores only the hashed OTP.
+    """
     otp_plain = create_otp(user_row["id"], purpose, reference_id)
     subject = f"UNI HELP - Verify your email" if purpose == "EMAIL_VERIFICATION" else f"UNI HELP - Your {purpose.replace('_', ' ').title()} Code"
 
@@ -644,7 +562,7 @@ def deliver_otp(user_row, purpose, reference_id, context_label=""):
             f"If you did not request this, ignore this email.\n\n- UNI HELP"
         )
     sent = send_email(user_row["email"], subject, body)
-    return sent
+    return sent, otp_plain
 
 
 def create_qr_token(reference_type, reference_id, purpose):
@@ -726,6 +644,164 @@ def check_location(helper_lat, helper_lng, target_lat, target_lng):
 # =============================================================================
 # 3. NOTIFICATIONS / TRUST SCORE / UNICOINS / RATINGS / TRANSACTIONS
 # =============================================================================
+
+def task_code(task_id):
+    """Short stable public ID used for both delivery requests and micro-tasks."""
+    return f"UNIH{int(task_id):04d}"
+
+
+def _parse_deadline_text(deadline_text):
+    """Best-effort parser for common UNI HELP deadline text in India time."""
+    if not deadline_text:
+        return None
+    raw = str(deadline_text).strip()
+    if not raw:
+        return None
+
+    tz = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(tz)
+    text = raw.lower().strip()
+    if text in {"flexible", "anytime", "asap"}:
+        return None
+
+    # Friendly day-part deadlines used by the existing forms.
+    day_word = "tomorrow" if "tomorrow" in text else ("today" if "today" in text else None)
+    daypart_hours = {"morning": 9, "afternoon": 15, "evening": 18, "tonight": 21}
+    for part, hour in daypart_hours.items():
+        if part in text and (day_word or part == "tonight"):
+            base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            if day_word == "tomorrow":
+                base += timedelta(days=1)
+            return base.replace(hour=hour)
+
+    # Explicit ISO-like date/time: 2026-09-18 18:00 / 2026-09-18T18:00
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %I:%M %p", "%Y-%m-%d %I%p"):
+        try:
+            return datetime.strptime(raw, fmt).replace(tzinfo=tz)
+        except ValueError:
+            pass
+
+    m = re.search(r"(today|tomorrow)?\s*(?:at\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", text)
+    if not m:
+        return None
+    day_word, hour_s, minute_s, ampm = m.groups()
+    hour = int(hour_s)
+    minute = int(minute_s or 0)
+    if ampm:
+        if hour < 1 or hour > 12:
+            return None
+        if ampm == "pm" and hour != 12:
+            hour += 12
+        if ampm == "am" and hour == 12:
+            hour = 0
+    elif hour > 23:
+        return None
+
+    base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if day_word == "tomorrow":
+        base += timedelta(days=1)
+    elif day_word != "today" and (hour, minute) <= (now.hour, now.minute):
+        base += timedelta(days=1)
+    return base.replace(hour=hour, minute=minute)
+
+
+def render_countdown(deadline_text, key, accepted_at=None):
+    """Render a live client-side countdown when the deadline text is parseable."""
+    deadline = _parse_deadline_text(deadline_text)
+    if deadline is None:
+        return False
+    target_ms = int(deadline.timestamp() * 1000)
+    components.html(
+        f"""
+        <div style='font-family:Arial,sans-serif;padding:12px 14px;border:1px solid #dbe3ee;border-radius:14px;background:#f8fbff;'>
+          <div style='font-size:12px;font-weight:700;color:#61708a;'>⏱️ TIME REMAINING</div>
+          <div id='cd-{key}' style='font-size:25px;font-weight:900;color:#102a56;margin-top:4px;'>Calculating…</div>
+        </div>
+        <script>
+        (function() {{
+          const target = {target_ms};
+          const el = document.getElementById('cd-{key}');
+          function tick() {{
+            const diff = target - Date.now();
+            if (diff <= 0) {{ el.textContent = '⏰ Deadline reached'; return; }}
+            const total = Math.floor(diff / 1000);
+            const d = Math.floor(total / 86400);
+            const h = Math.floor((total % 86400) / 3600);
+            const m = Math.floor((total % 3600) / 60);
+            const sec = total % 60;
+            el.textContent = (d ? d + 'd ' : '') + String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+          }}
+          tick(); setInterval(tick, 1000);
+        }})();
+        </script>
+        """,
+        height=92,
+        scrolling=False,
+    )
+    return True
+
+
+def send_acceptance_email(requester, helper_name, item_title, code, kind="task"):
+    """Email the requester after a helper accepts. Uses existing SMTP configuration."""
+    if not requester or not requester.get("email"):
+        return False
+    label = "delivery request" if kind == "delivery" else "micro-task"
+    subject = f"UNI HELP — Your {label} {code} was accepted"
+    body = (
+        f"Hi {requester['full_name']},\n\n"
+        f"Good news! Your UNI HELP {label} has been accepted.\n\n"
+        f"Task ID: {code}\n"
+        f"Request: {item_title}\n"
+        f"Helper: {helper_name}\n\n"
+        f"You can now open UNI HELP and use the private chat with your helper. "
+        f"Please keep communication inside UNI HELP.\n\n"
+        + (f"Open UNI HELP: {APP_URL}\n\n" if APP_URL else "")
+        + f"— UNI HELP\n"
+    )
+    return send_email(requester["email"], subject, body)
+
+
+def add_chat_message(conversation_type, reference_id, sender_id, message):
+    clean = str(message or "").strip()
+    if not clean:
+        return False
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO chat_messages (conversation_type, reference_id, sender_id, message, created_at) VALUES (?,?,?,?,?)",
+        (conversation_type, reference_id, sender_id, clean[:2000], now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def render_private_chat(user, conversation_type, reference_id, other_name, key_prefix):
+    """Private requester/helper chat tied to one accepted task/request."""
+    conn = get_conn()
+    messages = conn.execute(
+        "SELECT c.*, u.full_name sender_name FROM chat_messages c JOIN users u ON u.id=c.sender_id "
+        "WHERE c.conversation_type=? AND c.reference_id=? ORDER BY c.id ASC LIMIT 100",
+        (conversation_type, reference_id),
+    ).fetchall()
+    conn.close()
+
+    st.markdown(f"### 💬 Chat with {other_name}")
+    if not messages:
+        st.caption("Start the conversation. Your phone number and email are not shared here.")
+    for m in messages:
+        role = "user" if m["sender_id"] == user["id"] else "assistant"
+        with st.chat_message(role):
+            st.caption(f"{m['sender_name']} · {m['created_at'][:16].replace('T', ' ')}")
+            st.write(m["message"])
+
+    chat_cols = st.columns([5, 1])
+    prompt = chat_cols[0].text_input("Message", key=f"chat_input_{key_prefix}", label_visibility="collapsed", placeholder="Type a message…")
+    if chat_cols[1].button("➤", key=f"chat_send_{key_prefix}", use_container_width=True):
+        if add_chat_message(conversation_type, reference_id, user["id"], prompt):
+            st.rerun()
+        else:
+            st.warning("Type a message first.")
+
 
 def notify(user_id, message):
     conn = get_conn()
@@ -973,7 +1049,7 @@ def register_user(full_name,email,phone,student_id,password):
     if user_by_email(email): return False,"An account with this email already exists."
     conn=get_conn()
     if conn.execute("SELECT id FROM users WHERE student_id=?",(student_id,)).fetchone(): conn.close(); return False,"An account with this Student ID already exists."
-    conn.execute("INSERT INTO users (full_name,email,phone,student_id,password_hash,role,verified,approved,trust_score,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",(full_name.strip(),email,phone,student_id,hash_password(password),"student",0,0,50,now_iso()))
+    conn.execute("INSERT INTO users (full_name,email,phone,student_id,password_hash,role,verified,trust_score,created_at) VALUES (?,?,?,?,?,?,?,?,?)",(full_name.strip(),email,phone,student_id,hash_password(password),"student",0,50,now_iso()))
     new_id=conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]; conn.commit(); conn.close(); return True,new_id
 
 
@@ -986,8 +1062,7 @@ def authenticate_student_credentials(student_id,password):
     if row is None: return False,"No account found with that Student ID."
     if not verify_password(password,row["password_hash"]): return False,"Incorrect password."
     if row["is_suspended"]: return False,"This account has been suspended. Contact an administrator."
-    if not row["verified"]: return False,"Email verification is pending. Please verify the link sent to your email."
-    if not row["approved"]: return False,"Your email is verified, but your account is waiting for admin approval."
+    if not row["verified"]: return False,"Please complete email verification before logging in."
     return True,dict(row)
 
 
@@ -1523,7 +1598,7 @@ def _send_student_login_email_otp(student_id, password):
     email = (result.get("email") or "").strip()
     if not email or not is_valid_email(email):
         return False, "No valid email address is registered for this Student ID."
-    if not deliver_otp(result, "LOGIN_EMAIL_OTP", None, "login verification"):
+    if not deliver_otp(result, "LOGIN_EMAIL_OTP", None, "login verification")[0]:
         return False, "Unable to send OTP. Please try again."
     st.session_state["login_student_id"] = student_id.strip()
     st.session_state["login_otp_resend_at"] = time.time() + SMS_RESEND_SECONDS
@@ -1543,7 +1618,7 @@ def _send_registration_email_otp(user_id):
     user = user_by_id(user_id)
     if not user or not EMAIL_CONFIGURED:
         return False, "Email verification is not configured. Please contact the administrator."
-    if not deliver_otp(user, "EMAIL_VERIFICATION", None, "email verification"):
+    if not deliver_otp(user, "EMAIL_VERIFICATION", None, "email verification")[0]:
         return False, "Unable to send email OTP. Please try again."
     st.session_state["registration_email_resend_at"] = time.time() + SMS_RESEND_SECONDS
     return True, "Email OTP sent successfully."
@@ -1809,7 +1884,7 @@ def render_verify():
         if st.button("Resend OTP", use_container_width=True, key="verify_resend"):
             u = user_by_email(email.strip().lower())
             if not u or not EMAIL_CONFIGURED: st.error("Unable to send OTP. Please try again later.")
-            elif deliver_otp(u, "EMAIL_VERIFICATION", None, "email verification"): st.success("OTP sent successfully."); st.rerun()
+            elif deliver_otp(u, "EMAIL_VERIFICATION", None, "email verification")[0]: st.success("OTP sent successfully."); st.rerun()
             else: st.error("Unable to send OTP. Please try again.")
         if st.button("← Back", use_container_width=True, key="verify_back"):
             st.session_state["auth_mode"] = "Home"; st.rerun()
@@ -1852,7 +1927,7 @@ def render_create_hub(user):
     st.caption("Choose an action. Each option opens its own UNI HELP workflow.")
     actions = [
         ("📦", "Delivery", "Create or manage campus deliveries.", "Delivery", "create_delivery_hub"),
-        ("🤝", "Borrow", "Request an item from another student.", "Borrowing", "create_borrow_hub"),
+        ("🤝", "Borrow / Lend", "Find an item or share something with another student.", "Borrowing", "create_borrow_hub"),
         ("⚡", "Micro-Task", "Post a small task or help someone nearby.", "Micro-Tasks", "create_task_hub"),
         ("🙋", "Need Help", "Tell your campus community what you need.", "Help", "create_help_hub"),
     ]
@@ -1937,6 +2012,7 @@ def render_dashboard(user):
     st.markdown("<div class='uh-impact-title'>Make an impact</div>", unsafe_allow_html=True)
     impact = [
         ("🔎", "blue", "Find to borrow", "Discover useful items from students", "Borrowing", "impact_borrow"),
+        ("📦", "orange", "Lend an item", "Share something another student needs", "Borrowing", "impact_lend"),
         ("☷", "yellow", "Find tasks", "Earn UniCoins by helping around campus", "Micro-Tasks", "impact_tasks"),
         ("!", "red", "Need help", "Tell the campus what you need", "Help", "impact_help"),
     ]
@@ -2079,10 +2155,13 @@ def render_delivery(user):
                         )
                         conn.commit()
                         create_transaction(r["requester_id"], user["id"], "DELIVERY", r["id"], r["reward"], "HELD")
+                        requester = conn.execute("SELECT id, full_name, email FROM users WHERE id=?", (r["requester_id"],)).fetchone()
                         conn.close()
-                        notify(r["requester_id"], f"Someone accepted your delivery request: {r['item_name']}.")
-                        notify(user["id"], f"You accepted the delivery request: {r['item_name']}.")
-                        st.success("Request accepted! A pickup OTP is now available to the requester.")
+                        code = task_code(r["id"])
+                        notify(r["requester_id"], f"{user['full_name']} accepted your delivery request: {r['item_name']}. Open UNI HELP to chat with your helper.")
+                        notify(user["id"], f"You accepted the delivery request {code}: {r['item_name']}.")
+                        send_acceptance_email(dict(requester) if requester else None, user["full_name"], r["item_name"], code, "delivery")
+                        st.success(f"Request {code} accepted! You can now chat with the requester.")
                         st.rerun()
 
     with tabs[2]:
@@ -2098,9 +2177,13 @@ def render_delivery(user):
         for r in mine:
             with st.container(border=True):
                 st.markdown(f"**{r['item_name']}**  {status_badge(r['status'])}", unsafe_allow_html=True)
+                st.markdown(f"**Task ID:** `{task_code(r['id'])}`")
                 st.write(f"📍 {r['pickup_location']} → {r['destination']}  |  💰 ₹{r['reward']:.0f}")
                 if r["helper_id"]:
                     st.write(f"Helper: {r['helper_name']}")
+                if r["status"] == "ACCEPTED":
+                    render_countdown(r["preferred_time"], f"delivery-requester-{r['id']}", r["accepted_at"])
+                    render_private_chat(user, "DELIVERY", r["id"], r["helper_name"] or "Helper", f"delivery-requester-{r['id']}")
 
                 if r["status"] == "ACCEPTED":
                     st.info("Share the pickup code below with your helper when they arrive.")
@@ -2153,7 +2236,11 @@ def render_delivery(user):
         for r in mine:
             with st.container(border=True):
                 st.markdown(f"**{r['item_name']}** — for {r['req_name']}  {status_badge(r['status'])}", unsafe_allow_html=True)
+                st.markdown(f"**Task ID:** `{task_code(r['id'])}`")
                 st.write(f"📍 {r['pickup_location']} → {r['destination']}  |  💰 ₹{r['reward']:.0f}")
+                if r["status"] in ("ACCEPTED", "PICKUP_VERIFIED", "IN_TRANSIT"):
+                    render_countdown(r["preferred_time"], f"delivery-helper-{r['id']}", r["accepted_at"])
+                    render_private_chat(user, "DELIVERY", r["id"], r["req_name"], f"delivery-helper-{r['id']}")
 
                 if r["status"] == "ACCEPTED":
                     st.markdown("**Verify pickup**")
@@ -2287,9 +2374,45 @@ def render_dispute_form(transaction_type, transaction_id, reporter_id):
 
 def render_borrowing(user):
     st.markdown("## 🤝 Borrowing")
-    tabs = st.tabs(["Browse Items", "Incoming Requests", "My Borrow Requests"])
+    tabs = st.tabs(["List an Item", "Browse Items", "My Listings", "My Borrow Requests"])
 
     with tabs[0]:
+        st.markdown("#### List an item you're willing to lend")
+        with st.form("list_item"):
+            item_name = st.text_input("Item name")
+            category = st.selectbox("Category", ["Electronics", "Books", "Sports", "Lab Equipment", "Tools", "Accessories", "Other"])
+            description = st.text_area("Description")
+            condition = st.selectbox("Condition", ["Excellent", "Good", "Fair", "Worn"])
+            photo = st.file_uploader("Photo (optional)", type=["png", "jpg", "jpeg"])
+            availability = st.text_input("Availability", placeholder="e.g. Weekdays after 5pm")
+            deposit = st.number_input("Deposit (₹, prototype)", min_value=0.0, step=10.0)
+            rules = st.text_area("Borrowing rules (optional)", placeholder="e.g. Return within 3 days, no scratches")
+            submitted = st.form_submit_button("List Item")
+            if submitted:
+                if not item_name.strip():
+                    st.error("Item name is required.")
+                else:
+                    photo_path = None
+                    if photo is not None:
+                        fname = f"item_{user['id']}_{int(time.time())}_{photo.name}"
+                        fpath = os.path.join(PHOTOS_DIR, fname)
+                        with open(fpath, "wb") as f:
+                            f.write(photo.getbuffer())
+                        photo_path = fpath
+                    conn = get_conn()
+                    conn.execute(
+                        """INSERT INTO items (owner_id, item_name, category, description, condition,
+                            photo_path, availability, deposit, rules, status, created_at)
+                           VALUES (?,?,?,?,?,?,?,?,?, 'AVAILABLE', ?)""",
+                        (user["id"], item_name.strip(), category, description, condition,
+                         photo_path, availability, deposit, rules, now_iso()),
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.success("Item listed!")
+                    st.rerun()
+
+    with tabs[1]:
         st.markdown("#### Browse borrowable items")
         conn = get_conn()
         avail = conn.execute(
@@ -2327,49 +2450,70 @@ def render_borrowing(user):
                             st.success("Borrow request sent to the owner.")
                             st.rerun()
 
-    with tabs[1]:
-        st.markdown("#### Incoming borrow requests")
-        conn = get_conn()
-        incoming = conn.execute(
-            """SELECT b.*, i.item_name, u.full_name borrower_name, u.email borrower_email, u.phone borrower_phone
-               FROM borrowings b JOIN items i ON i.id=b.item_id JOIN users u ON u.id=b.borrower_id
-               WHERE b.owner_id=? ORDER BY b.id DESC""",
-            (user["id"],),
-        ).fetchall()
-        conn.close()
-        if not incoming:
-            st.caption("No incoming borrow requests.")
-        for b in incoming:
-            with st.container(border=True):
-                st.markdown(f"**{b['item_name']}** · {b['borrower_name']} · {status_badge(b['status'])}", unsafe_allow_html=True)
-                st.write(f"Expected return: {b['expected_return'] or 'Not specified'}")
-                if b["status"] == "REQUESTED":
-                    c1, c2 = st.columns(2)
-                    if c1.button("✅ Accept Request", key=f"incoming_bacc_{b['id']}", use_container_width=True):
-                        conn = get_conn()
-                        check = conn.execute("SELECT status FROM borrowings WHERE id=?", (b['id'],)).fetchone()
-                        item_check = conn.execute("SELECT status FROM items WHERE id=?", (b['item_id'],)).fetchone()
-                        if not check or check['status'] != 'REQUESTED' or not item_check or item_check['status'] != 'AVAILABLE':
-                            conn.close(); st.error("This borrow request is no longer available.")
-                        else:
-                            conn.execute("UPDATE borrowings SET status='ACCEPTED' WHERE id=?", (b['id'],))
-                            conn.execute("UPDATE items SET status='BORROWED' WHERE id=?", (b['item_id'],))
-                            conn.commit(); conn.close()
-                            if b['deposit'] > 0:
-                                create_transaction(b['borrower_id'], b['owner_id'], 'BORROW_DEPOSIT', b['id'], b['deposit'], 'HELD')
-                            notify(b['borrower_id'], f"Your request to borrow {b['item_name']} was accepted. Contact the owner for pickup verification.")
-                            st.success("Borrow request accepted."); st.rerun()
-                    if c2.button("❌ Reject Request", key=f"incoming_brej_{b['id']}", use_container_width=True):
-                        conn = get_conn(); conn.execute("UPDATE borrowings SET status='REJECTED' WHERE id=? AND status='REQUESTED'", (b['id'],)); conn.commit(); conn.close()
-                        notify(b['borrower_id'], f"Your request to borrow {b['item_name']} was rejected.")
-                        st.rerun()
-                elif b["status"] == "ACCEPTED":
-                    st.caption("Waiting for pickup OTP/QR verification.")
-                elif b["status"] == "ACTIVE":
-                    st.caption("Item is currently borrowed.")
-
     with tabs[2]:
-        st.markdown("#### Your borrow requests")
+        st.markdown("#### Items you've listed & incoming requests")
+        conn = get_conn()
+        my_items = conn.execute("SELECT * FROM items WHERE owner_id=? ORDER BY id DESC", (user["id"],)).fetchall()
+        conn.close()
+        for it in my_items:
+            with st.container(border=True):
+                st.markdown(f"**{it['item_name']}**  {status_badge(it['status'])}", unsafe_allow_html=True)
+                conn = get_conn()
+                reqs = conn.execute(
+                    "SELECT b.*, u.full_name borrower_name FROM borrowings b JOIN users u ON u.id=b.borrower_id "
+                    "WHERE b.item_id=? ORDER BY b.id DESC", (it["id"],)
+                ).fetchall()
+                conn.close()
+                for b in reqs:
+                    st.markdown(f"— Request from **{b['borrower_name']}**  {status_badge(b['status'])} (expected return: {b['expected_return']})", unsafe_allow_html=True)
+                    if b["status"] == "REQUESTED":
+                        c1, c2 = st.columns(2)
+                        if c1.button("✅ ACCEPT", key=f"bacc_{b['id']}"):
+                            conn = get_conn()
+                            conn.execute("UPDATE borrowings SET status='ACCEPTED' WHERE id=?", (b["id"],))
+                            conn.execute("UPDATE items SET status='BORROWED' WHERE id=?", (it["id"],))
+                            conn.commit()
+                            conn.close()
+                            if b["deposit"] > 0:
+                                create_transaction(b["borrower_id"], b["owner_id"], "BORROW_DEPOSIT", b["id"], b["deposit"], "HELD")
+                            notify(b["borrower_id"], f"Your request to borrow {it['item_name']} was accepted!")
+                            st.rerun()
+                        if c2.button("❌ REJECT", key=f"brej_{b['id']}"):
+                            conn = get_conn()
+                            conn.execute("UPDATE borrowings SET status='REJECTED' WHERE id=?", (b["id"],))
+                            conn.commit()
+                            conn.close()
+                            notify(b["borrower_id"], f"Your request to borrow {it['item_name']} was rejected.")
+                            st.rerun()
+
+                    if b["status"] == "ACCEPTED":
+                        st.caption("Waiting for borrower to complete pickup verification (OTP/QR you provide in person).")
+                        if st.button("🔐 Generate Pickup OTP", key=f"bpotp_{b['id']}"):
+                            deliver_otp(dict(user), "PICKUP_VERIFICATION", 100000 + b["id"], f"handover of {it['item_name']}")
+                        if st.button("📱 Generate Pickup QR", key=f"bpqr_{b['id']}"):
+                            token = create_qr_token("BORROWING", b["id"], "PICKUP_VERIFICATION")
+                            st.session_state[f"bqr_{b['id']}"] = token
+                        if st.session_state.get(f"bqr_{b['id']}"):
+                            st.image(generate_qr_image_bytes(st.session_state[f"bqr_{b['id']}"]), width=160)
+
+                    if b["status"] == "ACTIVE":
+                        st.caption("Item is currently with the borrower.")
+                        if st.button("🔐 Generate Return OTP", key=f"bretotp_{b['id']}"):
+                            deliver_otp(dict(user), "RETURN_VERIFICATION", 100000 + b["id"], f"return of {it['item_name']}")
+                        if st.button("📱 Generate Return QR", key=f"bretqr_{b['id']}"):
+                            token = create_qr_token("BORROWING", b["id"], "RETURN_VERIFICATION")
+                            st.session_state[f"bretqrtok_{b['id']}"] = token
+                        if st.session_state.get(f"bretqrtok_{b['id']}"):
+                            st.image(generate_qr_image_bytes(st.session_state[f"bretqrtok_{b['id']}"]), width=160)
+
+                    if b["status"] == "COMPLETED":
+                        render_rating_widget("BORROWING", b["id"], user["id"], b["borrower_id"], "borrower")
+
+                    with st.expander(f"⚠ Report issue on borrowing #{b['id']}"):
+                        render_dispute_form("BORROWING", b["id"], user["id"])
+
+    with tabs[3]:
+        st.markdown("#### Items you're borrowing")
         conn = get_conn()
         mine = conn.execute(
             "SELECT b.*, i.item_name, u.full_name owner_name FROM borrowings b "
@@ -2505,12 +2649,11 @@ def render_microtasks(user):
                     st.error("Invalid reward amount.")
                 else:
                     conn = get_conn()
-                    code = make_task_code({r[0] for r in conn.execute("SELECT task_code FROM tasks WHERE task_code IS NOT NULL").fetchall()})
                     conn.execute(
                         """INSERT INTO tasks (creator_id, title, description, pickup, destination,
-                            reward, deadline, category, task_code, admin_otp_bypass, status, created_at)
-                           VALUES (?,?,?,?,?,?,?,?,?,0,'CREATED', ?)""",
-                        (user["id"], title.strip(), description, pickup, destination, reward, deadline, category, code, now_iso()),
+                            reward, deadline, category, status, created_at)
+                           VALUES (?,?,?,?,?,?,?,?, 'CREATED', ?)""",
+                        (user["id"], title.strip(), description, pickup, destination, reward, deadline, category, now_iso()),
                     )
                     conn.commit()
                     conn.close()
@@ -2539,11 +2682,11 @@ def render_microtasks(user):
                     unsafe_allow_html=True,
                 )
                 st.write(active_task["description"] or "")
+                code = task_code(active_task["id"])
+                st.markdown(f"**Task ID:** `{code}`")
                 st.write(f"💰 ₹{active_task['reward']:.0f}  |  ⏰ {active_task['deadline'] or 'Flexible'}")
-                st.markdown(f"📞 **Requester:** {active_task['creator_phone'] or 'Phone not available'}  ·  ✉️ {active_task['creator_email']}", unsafe_allow_html=True)
-                if active_task['creator_phone']:
-                    st.markdown(f"[📞 Call requester](tel:{active_task['creator_phone']})")
-                st.markdown(f"[✉️ Email requester](mailto:{active_task['creator_email']})")
+                render_countdown(active_task["deadline"], f"task-active-{active_task['id']}", active_task["accepted_at"])
+                render_private_chat(user, "TASK", active_task["id"], active_task["creator_name"], f"task-active-{active_task['id']}")
                 if active_task["status"] == "ACCEPTED":
                     if st.button("▶ Start Task", key=f"tbrowse_start_{active_task['id']}"):
                         conn = get_conn()
@@ -2561,15 +2704,12 @@ def render_microtasks(user):
                         max_chars=6,
                     )
                     if st.button("Verify & Complete", key=f"tbrowse_compbtn_{active_task['id']}"):
-                        if active_task["admin_otp_bypass"]:
-                            ok, msg = True, "Admin-approved OTP-less completion."
-                        else:
-                            ok, msg = verify_otp(
-                                active_task["creator_id"],
-                                "DELIVERY_COMPLETION",
-                                active_task["id"],
-                                completion_code,
-                            )
+                        ok, msg = verify_otp(
+                            active_task["creator_id"],
+                            "DELIVERY_COMPLETION",
+                            active_task["id"],
+                            completion_code,
+                        )
                         if ok:
                             conn = get_conn()
                             conn.execute(
@@ -2606,12 +2746,12 @@ def render_microtasks(user):
             for t in open_tasks:
                 with st.container(border=True):
                     st.markdown(
-                        f"**{t['task_code'] or 'UNIH' + str(t['id']).zfill(4)[-4:]} · {t['title']}** ({t['category']}) — by {t['creator_name']}  "
+                        f"**{t['title']}** ({t['category']}) — by {t['creator_name']}  "
                         f"{status_badge(t['status'])}",
                         unsafe_allow_html=True,
                     )
                     st.write(t["description"] or "")
-                    st.write(f"💰 ₹{t['reward']:.0f}  |  ⏰ {t['deadline'] or 'Flexible'}")
+                    st.write(f"🆔 {task_code(t['id'])}  |  💰 ₹{t['reward']:.0f}  |  ⏰ {t['deadline'] or 'Flexible'}")
                     if st.button("✅ Accept Task", key=f"tacc_{t['id']}"):
                         conn = get_conn()
                         # Re-check the one-active-task rule at acceptance time so
@@ -2635,7 +2775,13 @@ def render_microtasks(user):
                             conn.commit()
                             create_transaction(t["creator_id"], user["id"], "TASK", t["id"], t["reward"], "HELD")
                             conn.close()
-                            notify(t["creator_id"], f"{user['full_name']} accepted your task: {t['title']}.")
+                            requester_conn = get_conn()
+                            requester = requester_conn.execute("SELECT id, full_name, email FROM users WHERE id=?", (t["creator_id"],)).fetchone()
+                            requester_conn.close()
+                            notify(t["creator_id"], f"{user['full_name']} accepted your task: {t['title']}. Open UNI HELP to chat with your helper.")
+                            email_ok = send_acceptance_email(dict(requester) if requester else None, user["full_name"], t["title"], task_code(t["id"]), "task")
+                            if not email_ok and EMAIL_CONFIGURED:
+                                notify(t["creator_id"], "Your task was accepted, but the acceptance email could not be delivered.")
                             st.rerun()
 
     with tabs[2]:
@@ -2647,9 +2793,13 @@ def render_microtasks(user):
         conn.close()
         for t in mine:
             with st.container(border=True):
-                st.markdown(f"**{t['task_code'] or 'UNIH' + str(t['id']).zfill(4)[-4:]} · {t['title']}**  {status_badge(t['status'])}", unsafe_allow_html=True)
+                st.markdown(f"**{t['title']}**  {status_badge(t['status'])}", unsafe_allow_html=True)
                 if t["helper_id"]:
                     st.write(f"Helper: {t['helper_name']}")
+                st.markdown(f"**Task ID:** `{task_code(t['id'])}`")
+                if t["status"] in ("ACCEPTED", "IN_PROGRESS"):
+                    render_countdown(t["deadline"], f"task-creator-{t['id']}", t["accepted_at"])
+                    render_private_chat(user, "TASK", t["id"], t["helper_name"] or "Helper", f"task-creator-{t['id']}")
                 if t["status"] == "COMPLETED" and t["helper_id"]:
                     render_rating_widget("TASK", t["id"], user["id"], t["helper_id"], "helper")
                 if t["status"] == "CREATED":
@@ -2670,7 +2820,11 @@ def render_microtasks(user):
         conn.close()
         for t in mine:
             with st.container(border=True):
-                st.markdown(f"**{t['task_code'] or 'UNIH' + str(t['id']).zfill(4)[-4:]} · {t['title']}** — for {t['creator_name']}  {status_badge(t['status'])}", unsafe_allow_html=True)
+                st.markdown(f"**{t['title']}** — for {t['creator_name']}  {status_badge(t['status'])}", unsafe_allow_html=True)
+                st.markdown(f"**Task ID:** `{task_code(t['id'])}`")
+                if t["status"] in ("ACCEPTED", "IN_PROGRESS"):
+                    render_countdown(t["deadline"], f"task-helper-{t['id']}", t["accepted_at"])
+                    render_private_chat(user, "TASK", t["id"], t["creator_name"], f"task-helper-{t['id']}")
                 if t["status"] == "ACCEPTED":
                     if st.button("▶ Start Task", key=f"tstart_{t['id']}"):
                         conn = get_conn()
@@ -2705,8 +2859,30 @@ def render_microtasks(user):
     ).fetchall()
     conn.close()
     for t in my_in_progress:
-        if st.button(f"🔐 Generate completion code for '{t['title']}'", key=f"gencomp_{t['id']}"):
-            deliver_otp(dict(user), "DELIVERY_COMPLETION", t["id"], f"completion of task '{t['title']}'")
+        otp_key = f"task_completion_otp_{t['id']}"
+        if st.button(f"🔐 Generate completion OTP for '{t['title']}'", key=f"gencomp_{t['id']}"):
+            sent, otp_plain = deliver_otp(
+                dict(user),
+                "DELIVERY_COMPLETION",
+                t["id"],
+                f"completion of task '{t['title']}'",
+            )
+            # Keep the plaintext only in the current browser session. The DB
+            # stores the OTP as a hash and verification consumes it once.
+            st.session_state[otp_key] = otp_plain
+            st.session_state[f"task_completion_otp_sent_{t['id']}"] = sent
+            st.rerun()
+
+        if st.session_state.get(otp_key):
+            st.success(f"🔐 Completion OTP: **{st.session_state[otp_key]}**")
+            st.caption(
+                "Give this 6-digit OTP to your helper through the UNI HELP chat. "
+                f"It expires in {OTP_EXPIRY_MINUTES} minutes and can be used only once."
+            )
+            if st.session_state.get(f"task_completion_otp_sent_{t['id']}"):
+                st.caption("✉️ A copy was also sent to your registered email.")
+            else:
+                st.caption("🧪 Email was not sent because SMTP is not configured; the OTP above is still valid.")
 
 
 # -----------------------------------------------------------------------------
@@ -2819,12 +2995,10 @@ def render_admin_student_profile(admin_user, student_id):
                    '<span class="uh-badge" style="background:#dcfce7;color:#166534;">🟢 Active</span>')
     verification_html = ('<span class="uh-badge" style="background:#dcfce7;color:#166534;">✓ Verified</span>' if student["verified"] else
                          '<span class="uh-badge" style="background:#fef3c7;color:#92400e;">Pending verification</span>')
-    approval_html = ('<span class="uh-badge" style="background:#dcfce7;color:#166534;">✓ Approved</span>' if student["approved"] else
-                     '<span class="uh-badge" style="background:#fef3c7;color:#92400e;">Pending approval</span>')
     st.markdown(f'''<div class="uh-admin-profile-card"><div class="uh-profile-header">
         <div class="uh-profile-avatar">{str(student["full_name"] or "S")[0].upper()}</div>
         <div><h2>{student["full_name"]}</h2><div class="uh-profile-sub">Student ID: <strong>{student["student_id"]}</strong></div>
-        <div class="uh-profile-status">{status_html} &nbsp; {verification_html} &nbsp; {approval_html}</div></div>
+        <div class="uh-profile-status">{status_html} &nbsp; {verification_html}</div></div>
     </div></div>''', unsafe_allow_html=True)
 
     st.markdown("### Profile information")
@@ -2869,7 +3043,7 @@ def render_admin_student_profile(admin_user, student_id):
         if not rows: st.info("No micro-task history for this student.")
         for t in rows:
             role = "Creator" if t["creator_id"] == sid else "Helper"
-            st.markdown(f"**{t['task_code'] or 'UNIH' + str(t['id']).zfill(4)[-4:]} · {t['title']}** · {role} · {status_badge(t['status'])}<br>Creator: {t['creator_name']} · Helper: {t['helper_name'] or 'Unassigned'} · ₹{t['reward']:.0f}<br><small>{str(t['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
+            st.markdown(f"**#{t['id']} — {t['title']}** · {role} · {status_badge(t['status'])}<br>Creator: {t['creator_name']} · Helper: {t['helper_name'] or 'Unassigned'} · ₹{t['reward']:.0f}<br><small>{str(t['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
     with tabs[3]:
         rows = conn.execute("SELECT * FROM transactions WHERE payer_id=? OR payee_id=? ORDER BY id DESC LIMIT 100", (sid, sid)).fetchall()
         if not rows: st.info("No transactions for this student.")
@@ -2894,28 +3068,6 @@ def render_admin_student_profile(admin_user, student_id):
         for d in rows:
             st.markdown(f"**#{d['id']} — {d['category']}** · {d['transaction_type']} #{d['transaction_id']} · {status_badge(d['status'])}<br>{d['description'] or ''}<br><small>{str(d['created_at'])[:19].replace('T',' ')}</small>", unsafe_allow_html=True); st.divider()
     conn.close()
-
-    st.markdown("### Admin account controls")
-    pc1, pc2, pc3 = st.columns(3)
-    if not student["verified"]:
-        if pc1.button("✉️ Send verification email", key=f"profile_resend_verify_{sid}", use_container_width=True):
-            ok = deliver_otp(dict(student), "EMAIL_VERIFICATION", None, "email verification")
-            st.success("Verification email sent.") if ok else st.error("Unable to send verification email. Check SMTP/APP_URL.")
-    else:
-        pc1.success("✓ Email verified")
-    if not student["approved"]:
-        if pc2.button("✅ Approve account", key=f"profile_approve_{sid}", use_container_width=True):
-            conn = get_conn(); conn.execute("UPDATE users SET approved=1 WHERE id=?", (sid,)); conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (admin_user['id'], 'APPROVE_USER', sid, '', now_iso())); conn.commit(); conn.close(); notify(sid, "Your UNI HELP account has been approved by an administrator."); st.success("Account approved."); st.rerun()
-    else:
-        pc2.success("✓ Account approved")
-    if pc3.button("🗑 Delete account", key=f"profile_delete_{sid}", use_container_width=True):
-        try:
-            delete_student_account(sid)
-            st.session_state.pop("admin_profile_user_id", None)
-            st.success("Student account deleted permanently.")
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Unable to delete this account: {exc}")
 
     action_col, back_col = st.columns([1, 1])
     if student["is_suspended"]:
@@ -2949,7 +3101,6 @@ def render_admin(user):
     conn = get_conn()
     total_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student'").fetchone()["c"]
     verified_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND verified=1").fetchone()["c"]
-    approved_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND approved=1").fetchone()["c"]
     active_users = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND is_suspended=0").fetchone()["c"]
     suspended = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND is_suspended=1").fetchone()["c"]
     active_requests = conn.execute("SELECT COUNT(*) c FROM requests WHERE status NOT IN ('COMPLETED','CANCELLED')").fetchone()["c"]
@@ -2975,7 +3126,7 @@ def render_admin(user):
     with cols[2]: _admin_metric_card("⚠️", "Needs Attention", open_disputes + suspended, f"{open_disputes} disputes · {suspended} suspended")
     with cols[3]: _admin_metric_card("💰", "Transaction Value", f"₹{total_value:.0f}", f"{total_transactions} transactions")
 
-    tabs = st.tabs(["Overview", "Users", "Requests", "Disputes", "Transactions", "Task Control", "Announcements", "System"])
+    tabs = st.tabs(["Overview", "Users", "Requests", "Disputes", "Transactions", "Announcements", "System"])
 
     with tabs[0]:
         st.markdown('<div class="uh-admin-section">Platform health</div>', unsafe_allow_html=True)
@@ -2985,7 +3136,7 @@ def render_admin(user):
         borrow_rate = min(100, active_borrowings / max(total_users, 1) * 100)
         task_rate = min(100, completed_tasks / max(total_users, 1) * 100)
         health_cards = [
-            (health_cols[0], "✅", "Verification", f"{verified_users} verified · {approved_users} approved of {total_users}", verification_rate),
+            (health_cols[0], "✅", "Verification", f"{verified_users} of {total_users} students verified", verification_rate),
             (health_cols[1], "📦", "Delivery completion", f"{completed_deliveries} completed of {total_requests}", completion_rate),
             (health_cols[2], "🤝", "Active borrowings", f"{active_borrowings} currently active", borrow_rate),
             (health_cols[3], "⚡", "Micro-tasks", f"{completed_tasks} completed", task_rate),
@@ -3052,7 +3203,6 @@ def render_admin(user):
                 earnings_u = conn.execute("SELECT COALESCE(SUM(amount),0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (u["id"],)).fetchone()["s"] or 0
                 status = "Suspended" if u["is_suspended"] else "Active"
                 verification = "Verified" if u["verified"] else "Unverified"
-                approval = "Approved" if u["approved"] else "Pending approval"
                 name = str(u["full_name"] or "S")
                 html = (
                     '<div class="uh-admin-search-result"><div class="uh-profile-header">'
@@ -3060,7 +3210,7 @@ def render_admin(user):
                     f'<div class="uh-profile-sub">Student ID: <strong>{u["student_id"]}</strong></div></div></div>'
                     '<div class="uh-profile-grid">'
                     f'<div><span>Email</span><strong>{u["email"]}</strong></div><div><span>Phone</span><strong>{u["phone"] or "—"}</strong></div>'
-                    f'<div><span>Verification</span><strong>{verification} · {approval}</strong></div><div><span>Trust Score</span><strong>{u["trust_score"]}/100</strong></div>'
+                    f'<div><span>Verification</span><strong>{verification}</strong></div><div><span>Trust Score</span><strong>{u["trust_score"]}/100</strong></div>'
                     f'<div><span>Rating</span><strong>{rating_text}</strong></div><div><span>Tasks Completed</span><strong>{completed_tasks_u}</strong></div>'
                     f'<div><span>Active Borrowings</span><strong>{active_borrow_u}</strong></div><div><span>Completed Deliveries</span><strong>{completed_delivery_u}</strong></div>'
                     f'<div><span>Earnings</span><strong>₹{earnings_u:.0f}</strong></div><div><span>UniCoins</span><strong>🪙 {u["unicoins"]}</strong></div>'
@@ -3081,7 +3231,7 @@ def render_admin(user):
             with st.container(border=True):
                 cols = st.columns([4.5, 1.1, 1.2, 1.2])
                 status_text = "🔴 Suspended" if u["is_suspended"] else "🟢 Active"
-                verification_text = ("✓ Verified" if u["verified"] else "○ Unverified") + (" · ✓ Approved" if u["approved"] else " · ⏳ Approval pending")
+                verification_text = "✓ Verified" if u["verified"] else "○ Unverified"
                 cols[0].markdown(f"**{u['full_name']}** · `{u['student_id'] or '—'}`  · {verification_text}  · {status_text}<br><span style='color:#71819a;font-size:.8rem'>{u['email']} · Trust {u['trust_score']}/100</span>", unsafe_allow_html=True)
                 if cols[1].button("Profile", key=f"profile_list_{u['id']}", use_container_width=True):
                     st.session_state["admin_profile_user_id"] = u["student_id"]
@@ -3096,34 +3246,6 @@ def render_admin(user):
                         conn.execute("UPDATE users SET is_suspended=1 WHERE id=?", (u["id"],))
                         conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user["id"], "SUSPEND_USER", u["id"], "", now_iso()))
                         conn.commit(); st.rerun()
-                action_cols = st.columns(4)
-                if not u["verified"]:
-                    if action_cols[0].button("✉️ Send verification", key=f"resend_verify_{u['id']}", use_container_width=True):
-                        fresh_user = dict(conn.execute("SELECT * FROM users WHERE id=?", (u['id'],)).fetchone())
-                        ok = deliver_otp(fresh_user, "EMAIL_VERIFICATION", None, "email verification")
-                        if ok:
-                            st.success("Verification email sent.")
-                        else:
-                            st.error("Could not send verification email. Check SMTP and APP_URL settings.")
-                else:
-                    action_cols[0].caption("✓ Email verified")
-                if not u["approved"]:
-                    if action_cols[1].button("✅ Approve", key=f"approve_{u['id']}", use_container_width=True):
-                        conn.execute("UPDATE users SET approved=1 WHERE id=?", (u['id'],))
-                        conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user['id'], 'APPROVE_USER', u['id'], '', now_iso()))
-                        conn.commit(); notify(u['id'], "Your UNI HELP account has been approved by an administrator."); st.success("Account approved."); st.rerun()
-                else:
-                    action_cols[1].caption("✓ Approved")
-                if action_cols[2].button("🗑 Delete", key=f"delete_user_{u['id']}", use_container_width=True):
-                    try:
-                        delete_student_account(u['id'])
-                        st.success("Student account deleted permanently.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Unable to delete this account: {exc}")
-                if action_cols[3].button("Profile", key=f"profile_list_bottom_{u['id']}", use_container_width=True):
-                    st.session_state["admin_profile_user_id"] = u["student_id"]
-                    st.rerun()
 
     with tabs[2]:
         st.markdown('<div class="uh-admin-section">Request operations</div>', unsafe_allow_html=True)
@@ -3180,50 +3302,6 @@ def render_admin(user):
                 c3.write(f"₹{tx['amount']:.0f}")
 
     with tabs[5]:
-        st.markdown('<div class="uh-admin-section">⚡ Task Control</div>', unsafe_allow_html=True)
-        st.caption("Use the short Task ID, e.g. UNIH9877. Admin can enable OTP-less completion, but the assigned helper still performs the task.")
-        task_lookup = st.text_input("Task ID", placeholder="UNIH9877", key="admin_task_lookup")
-        if st.button("Find Task", type="primary", key="admin_find_task"):
-            st.session_state["admin_task_lookup_result"] = task_lookup.strip().upper()
-        lookup_code = st.session_state.get("admin_task_lookup_result", "")
-        if lookup_code:
-            t = conn.execute("SELECT t.*, creator.full_name creator_name, creator.email creator_email, creator.phone creator_phone, helper.full_name helper_name FROM tasks t JOIN users creator ON creator.id=t.creator_id LEFT JOIN users helper ON helper.id=t.helper_id WHERE UPPER(t.task_code)=? LIMIT 1", (lookup_code,)).fetchone()
-            if not t:
-                st.error("No task found with that Task ID.")
-            else:
-                st.markdown(f"### {t['task_code']} · {t['title']}")
-                st.write(f"Requester: {t['creator_name']} · Helper: {t['helper_name'] or 'Not assigned'}")
-                st.write(f"Status: {t['status']} · Reward: ₹{t['reward']:.0f}")
-                if t['status'] == 'IN_PROGRESS':
-                    if t['admin_otp_bypass']:
-                        st.success("🛡 OTP-less completion is enabled.")
-                    elif st.button("🛡 Enable OTP-less completion", type="primary", key=f"admin_bypass_{t['id']}"):
-                        conn.execute("UPDATE tasks SET admin_otp_bypass=1 WHERE id=? AND status='IN_PROGRESS'", (t['id'],))
-                        conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user['id'], 'TASK_OTP_BYPASS', t['id'], f"Task {t['task_code']}: enabled OTP-less completion", now_iso()))
-                        conn.commit()
-                        notify(t['helper_id'], f"Admin enabled OTP-less completion for task {t['task_code']}.")
-                        st.success("OTP-less completion enabled. The helper must still complete the task.")
-                        st.rerun()
-                if t['status'] in ('ACCEPTED','IN_PROGRESS'):
-                    st.info("Admin control does not complete the task. It only removes the OTP requirement when needed.")
-                if st.button("🗑 Delete Task", key=f"admin_delete_task_{t['id']}"):
-                    conn.execute("DELETE FROM transactions WHERE related_type='TASK' AND related_id=?", (t['id'],))
-                    conn.execute("DELETE FROM tasks WHERE id=?", (t['id'],))
-                    conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user['id'], 'DELETE_TASK', t['id'], f"Deleted task {t['task_code']}", now_iso()))
-                    conn.commit()
-                    st.success("Task deleted.")
-                    st.session_state.pop("admin_task_lookup_result", None)
-                    st.rerun()
-
-        st.markdown("### 🧹 Marketplace cleanup")
-        if st.button("Delete ALL borrowing + micro-task requests", key="admin_clear_marketplace"):
-            clear_borrowing_and_task_data()
-            conn.execute("INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?,?,?,?,?)", (user['id'], 'CLEAR_BORROW_TASK_DATA', None, 'Cleared all items, borrowings and micro-tasks', now_iso()))
-            conn.commit()
-            st.success("All borrowing and micro-task marketplace data has been removed.")
-            st.rerun()
-
-    with tabs[6]:
         st.markdown('<div class="uh-admin-section">📣 Broadcast Center</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="uh-admin-panel">'
@@ -3328,7 +3406,7 @@ def render_admin(user):
                     else:
                         st.info("✉️ Email was not sent because SMTP is not configured. The in-app notification delivery was completed.")
 
-    with tabs[7]:
+    with tabs[6]:
         st.markdown('<div class="uh-admin-section">Platform diagnostics</div>', unsafe_allow_html=True)
         checks = [
             ("SQLite database", os.path.exists(DB_PATH), DB_PATH),
@@ -3466,50 +3544,6 @@ def render_student_bottom_nav(user):
                         st.session_state['nav'] = target; st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
 
-def render_active_task_lock(user):
-    """Full-screen student lock: only the accepted task remains usable."""
-    task = get_active_task(user["id"])
-    if not task:
-        return False
-    st.markdown("<div class='uh-page-kicker'>TASK IN PROGRESS</div>", unsafe_allow_html=True)
-    st.markdown("# 🔒 Finish your active task first")
-    st.info("UNI HELP is locked for you while this task is active. You cannot browse, create, borrow, or accept another task until this task is completed.")
-    with st.container(border=True):
-        code = task["task_code"] or "UNIH" + str(task["id"]).zfill(4)[-4:]
-        st.markdown(f"## {code} · {task['title']}")
-        st.markdown(f"**Requester:** {task['creator_name']}")
-        st.write(task["description"] or "No description provided.")
-        st.write(f"💰 Reward: ₹{task['reward']:.0f}   |   ⏰ Deadline: {task['deadline'] or 'Flexible'}")
-        st.markdown(f"📞 **{task['creator_phone'] or 'Phone not available'}** · ✉️ **{task['creator_email']}**")
-        if task["creator_phone"]:
-            st.markdown(f"[📞 Call requester](tel:{task['creator_phone']})")
-        st.markdown(f"[✉️ Email requester](mailto:{task['creator_email']})")
-        if task["status"] == "ACCEPTED":
-            if st.button("▶ Start Task", type="primary", use_container_width=True, key=f"locked_start_{task['id']}"):
-                conn=get_conn(); conn.execute("UPDATE tasks SET status='IN_PROGRESS' WHERE id=? AND helper_id=? AND status='ACCEPTED'", (task["id"], user["id"])); conn.commit(); conn.close(); st.rerun()
-        else:
-            if task["admin_otp_bypass"]:
-                st.success("🛡 Admin enabled OTP-less completion for this task.")
-            else:
-                completion_code = st.text_input("Completion code from requester", max_chars=6, key=f"locked_comp_{task['id']}")
-            if st.button("✅ Complete Task", type="primary", use_container_width=True, key=f"locked_complete_{task['id']}"):
-                if task["admin_otp_bypass"]:
-                    ok, msg = True, "Admin-approved OTP-less completion."
-                else:
-                    ok, msg = verify_otp(task["creator_id"], "DELIVERY_COMPLETION", task["id"], completion_code)
-                if ok:
-                    conn=get_conn(); conn.execute("UPDATE tasks SET status='COMPLETED', completed_at=? WHERE id=? AND helper_id=? AND status='IN_PROGRESS'", (now_iso(), task["id"], user["id"])); conn.commit(); conn.close()
-                    update_transaction_status("TASK", task["id"], "RELEASED")
-                    add_unicoins(user["id"], 15, "Micro-task completed")
-                    recalc_trust_score(user["id"])
-                    notify(task["creator_id"], f"Your task {code} was completed by {user['full_name']}.")
-                    st.success("Task completed! Your UNI HELP account is unlocked.")
-                    st.rerun()
-                else:
-                    st.error(msg)
-    return True
-
-
 def main():
     user = st.session_state.get("user")
 
@@ -3539,17 +3573,8 @@ def main():
     refresh_current_user()
     user = st.session_state["user"]
     render_sidebar(user)
-
-    # A helper with an accepted/in-progress micro-task is hard-locked into that
-    # task until completion. Admins are never affected by the student lock.
     if user["role"] != "admin":
-        active_task = get_active_task(user["id"])
-        if active_task:
-            render_student_topbar(user)
-            if render_active_task_lock(user):
-                return
-        else:
-            render_student_topbar(user)
+        render_student_topbar(user)
 
     nav = st.session_state.get("nav", "Dashboard")
     if nav == "Dashboard":
