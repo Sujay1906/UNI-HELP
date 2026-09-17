@@ -738,7 +738,7 @@ h1, h2, h3, h4, h5, h6 {
 .main .block-container {
     max-width: 520px !important;
     padding-top: 1rem !important;
-    padding-bottom: 7rem !important;
+    padding-bottom: 7.5rem !important;
     padding-left: 0.6rem !important;
     padding-right: 0.6rem !important;
 }
@@ -796,61 +796,52 @@ h1, h2, h3, h4, h5, h6 {
     color: #00a884 !important;
 }
 
-/* --- TRUE FIXED BOTTOM NAVIGATION BAR --- */
-.fixed-bottom-nav {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: #111b21;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-    display: flex;
-    justify-content: space-around;
-    align-items: center;
-    padding: 10px 0;
-    z-index: 99999;
-    box-shadow: 0 -4px 20px rgba(0,0,0,0.5);
+/* --- STREAMLIT FIXED BOTTOM BAR --- */
+div[data-testid="stHorizontalBlock"]:has(button[key^="bnav_"]) {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    width: 100% !important;
+    max-width: 520px !important;
+    background: #111b21 !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+    z-index: 99999 !important;
+    padding: 6px 8px !important;
+    margin: 0 !important;
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.6) !important;
 }
 
-.nav-item {
-    color: #8696a0;
-    text-decoration: none;
-    font-size: 0.78rem;
-    font-weight: 700;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
+button[key^="bnav_"] {
+    font-size: 0.72rem !important;
+    font-weight: 700 !important;
+    padding: 6px 2px !important;
+    border-radius: 10px !important;
+    line-height: 1.2 !important;
+    white-space: pre !important;
 }
 
-.nav-item.active {
-    color: #00a884;
+/* --- FLOATING ACTION BUTTON (FAB) --- */
+div:has(> button[key="fab_plus_btn"]) {
+    position: fixed !important;
+    bottom: 75px !important;
+    right: 25px !important;
+    z-index: 99998 !important;
 }
 
-/* --- TRUE GLOBAL FLOATING ACTION BUTTON (FAB) --- */
-.fab-btn-fixed {
-    position: fixed;
-    bottom: 75px;
-    right: 25px;
-    width: 56px;
-    height: 56px;
-    background: #00a884;
-    color: white;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 30px;
-    font-weight: bold;
-    box-shadow: 0 6px 20px rgba(0, 168, 132, 0.6);
-    z-index: 99999;
-    cursor: pointer;
-    text-decoration: none;
-    transition: transform 0.2s ease;
-}
-.fab-btn-fixed:hover {
-    transform: scale(1.08);
-    background: #028f71;
+button[key="fab_plus_btn"] {
+    width: 56px !important;
+    height: 56px !important;
+    border-radius: 50% !important;
+    background: #00a884 !important;
+    color: white !important;
+    font-size: 28px !important;
+    font-weight: 800 !important;
+    box-shadow: 0 6px 20px rgba(0, 168, 132, 0.6) !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
 }
 
 /* --- HANDSHAKE LOADING ANIMATION --- */
@@ -1221,6 +1212,8 @@ def render_reset_password():
                     st.session_state.pop("active_reset_token", None)
                     st.session_state["auth_mode"] = "student_login"
                     st.rerun()
+                else:
+                    st.error(msg)
 
 def render_registration():
     col1, col2, col3 = st.columns([0.1, 2, 0.1])
@@ -1296,7 +1289,7 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. EXPANDED ADMIN WORKSPACE (DISPUTE-ONLY ALERT TRIAGE & AUTO-DISAPPEAR)
+# 6. EXPANDED ADMIN WORKSPACE (CLEANED ALERTS TAB)
 # =============================================================================
 
 def render_admin_student_profile(admin_user, student_id):
@@ -1534,8 +1527,6 @@ def render_admin_workspace(user):
     open_disputes = conn.execute("SELECT COUNT(*) c FROM disputes WHERE status IN ('OPEN','UNDER_REVIEW')").fetchone()["c"]
     held_escrow = conn.execute("SELECT COALESCE(SUM(amount), 0) s FROM transactions WHERE status='HELD'").fetchone()["s"]
     active_deliveries = conn.execute("SELECT COUNT(*) c FROM requests WHERE status NOT IN ('COMPLETED', 'CANCELLED')").fetchone()["c"]
-    
-    # Count only non-dispute alerts for the metric badge
     unread_admin_notifs = conn.execute("SELECT COUNT(*) c FROM admin_notifications WHERE is_read=0 AND category != 'DISPUTE'").fetchone()["c"]
     conn.close()
 
@@ -1560,24 +1551,16 @@ def render_admin_workspace(user):
 
     with adm_tabs[0]:
         st.markdown("#### 🔔 System Alerts & Immediate Actions")
-        st.caption("Note: Approved registrations and unlocked accounts automatically disappear from this list. Dispute notifications are managed inside the Dispute Queue.")
         
         conn = get_conn()
-        # EXCLUDE DISPUTES FROM ADMIN ALERTS TAB COMPLETELY
+        # Strictly show pending student actions (NEW_ACCOUNT & OTP_LOCKOUT). Disputes are never shown here.
         notifs = conn.execute(
             "SELECT * FROM admin_notifications WHERE category != 'DISPUTE' ORDER BY id DESC LIMIT 50"
         ).fetchall()
         conn.close()
 
-        if st.button("Mark All Alerts as Read"):
-            conn = get_conn()
-            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE category != 'DISPUTE'")
-            conn.commit()
-            conn.close()
-            st.rerun()
-
         if not notifs:
-            st.info("No incoming non-dispute alerts at this time.")
+            st.info("No incoming alerts at this time.")
         for n in notifs:
             with st.container(border=True):
                 icon = "👤"
@@ -1593,7 +1576,6 @@ def render_admin_workspace(user):
                         if st.button(btn_txt, key=f"alert_appr_{n['id']}", use_container_width=True):
                             conn = get_conn()
                             conn.execute("UPDATE users SET verified=1, is_suspended=0, lockout_at=NULL WHERE student_id=?", (n["reference_id"],))
-                            # Automatically delete notification upon approval so it disappears
                             conn.execute("DELETE FROM admin_notifications WHERE id=?", (n["id"],))
                             u_target = conn.execute("SELECT id FROM users WHERE student_id=?", (n["reference_id"],)).fetchone()
                             conn.commit()
@@ -1603,7 +1585,7 @@ def render_admin_workspace(user):
                             st.success(f"Approved and removed alert for student {n['reference_id']}!")
                             st.rerun()
                     with act_c2:
-                        if st.button("Dismiss & Delete Alert", key=f"alert_dism_u_{n['id']}", use_container_width=True):
+                        if st.button("Dismiss Alert", key=f"alert_dism_u_{n['id']}", use_container_width=True):
                             conn = get_conn()
                             conn.execute("DELETE FROM admin_notifications WHERE id=?", (n["id"],))
                             conn.commit()
@@ -1928,7 +1910,7 @@ def render_admin_workspace(user):
                 st.success("Broadcast sent!")
 
 # =============================================================================
-# 7. STUDENT WORKSPACE
+# 7. STUDENT WORKSPACE (NO-RELOAD BOTTOM BAR)
 # =============================================================================
 
 def render_student_workspace(user):
@@ -1965,13 +1947,12 @@ def render_student_workspace(user):
 
     st.write("")
 
-    # Initialize tab state if not present
     if "student_current_tab" not in st.session_state:
         st.session_state["student_current_tab"] = "Home"
 
     curr_tab = st.session_state["student_current_tab"]
 
-    # --- RENDER MAIN CONTENT BASED ON CURRENT TAB ---
+    # --- TAB CONTENT ---
     if curr_tab == "Home":
         st.markdown("#### ⚡ Live Campus Activity")
         
@@ -2164,63 +2145,54 @@ def render_student_workspace(user):
                 st.write(n["message"])
                 st.caption(n["created_at"][:16].replace("T", " "))
 
-        if not notifs and st.button("Mark All As Read"):
+        if notifs and st.button("Mark All As Read"):
             conn = get_conn()
             conn.execute("UPDATE notifications SET is_read=1 WHERE user_id=?", (user["id"],))
             conn.commit(); conn.close()
             st.rerun()
 
-    # --- TRUE FIXED BOTTOM NAVIGATION BAR ---
-    st.markdown(
-        f"""
-        <div class="fixed-bottom-nav">
-            <a href="?nav=Home" target="_self" class="nav-item {'active' if curr_tab == 'Home' else ''}">🏠<br>Home</a>
-            <a href="?nav=Tasks" target="_self" class="nav-item {'active' if curr_tab == 'Tasks' else ''}">📋<br>Tasks</a>
-            <a href="?nav=Borrows" target="_self" class="nav-item {'active' if curr_tab == 'Borrows' else ''}">🤝<br>Borrows</a>
-            <a href="?nav=Micro-Tasks" target="_self" class="nav-item {'active' if curr_tab == 'Micro-Tasks' else ''}">🛠️<br>Micro</a>
-            <a href="?nav=Profile" target="_self" class="nav-item {'active' if curr_tab == 'Profile' else ''}">👤<br>Profile</a>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    # Check query params for bottom nav clicks
-    try:
-        nav_param = st.query_params.get("nav")
-        if nav_param and nav_param in ["Home", "Tasks", "Borrows", "Micro-Tasks", "Profile"]:
-            if st.session_state["student_current_tab"] != nav_param:
-                st.session_state["student_current_tab"] = nav_param
-                st.rerun()
-    except Exception:
-        pass
+    # --- TRUE ZERO-RELOAD STREAMLIT BOTTOM BAR ---
+    st.write("")
+    b_col1, b_col2, b_col3, b_col4, b_col5 = st.columns(5)
+    with b_col1:
+        if st.button("🏠\nHome", key="bnav_home", type="primary" if curr_tab == "Home" else "secondary", use_container_width=True):
+            st.session_state["student_current_tab"] = "Home"
+            st.rerun()
+    with b_col2:
+        if st.button("📋\nTasks", key="bnav_tasks", type="primary" if curr_tab == "Tasks" else "secondary", use_container_width=True):
+            st.session_state["student_current_tab"] = "Tasks"
+            st.rerun()
+    with b_col3:
+        if st.button("🤝\nBorrows", key="bnav_borrows", type="primary" if curr_tab == "Borrows" else "secondary", use_container_width=True):
+            st.session_state["student_current_tab"] = "Borrows"
+            st.rerun()
+    with b_col4:
+        if st.button("🛠️\nMicro", key="bnav_micro", type="primary" if curr_tab == "Micro-Tasks" else "secondary", use_container_width=True):
+            st.session_state["student_current_tab"] = "Micro-Tasks"
+            st.rerun()
+    with b_col5:
+        if st.button("👤\nProfile", key="bnav_profile", type="primary" if curr_tab == "Profile" else "secondary", use_container_width=True):
+            st.session_state["student_current_tab"] = "Profile"
+            st.rerun()
 
     # Floating Action Button (FAB)
-    st.markdown(
-        """
-        <div style="position: fixed; bottom: 75px; right: 20px; z-index: 99999;">
-        """,
-        unsafe_allow_html=True
-    )
-    
     if st.button("⊕", key="fab_plus_btn"):
         st.session_state["show_fab_modal"] = not st.session_state.get("show_fab_modal", False)
         st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
 
     if st.session_state.get("show_fab_modal", False):
         with st.container(border=True):
             st.markdown("##### ➕ Create New Request")
             fc1, fc2, fc3 = st.columns(3)
-            if fc1.button("📦 Delivery"):
+            if fc1.button("📦 Delivery", key="fab_opt_deliv"):
                 st.session_state["student_current_tab"] = "Tasks"
                 st.session_state["show_fab_modal"] = False
                 st.rerun()
-            if fc2.button("🤝 Borrow"):
+            if fc2.button("🤝 Borrow", key="fab_opt_borrow"):
                 st.session_state["student_current_tab"] = "Borrows"
                 st.session_state["show_fab_modal"] = False
                 st.rerun()
-            if fc3.button("🛠️ Task"):
+            if fc3.button("🛠️ Task", key="fab_opt_task"):
                 st.session_state["student_current_tab"] = "Micro-Tasks"
                 st.session_state["show_fab_modal"] = False
                 st.rerun()
