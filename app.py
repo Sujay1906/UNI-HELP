@@ -1296,7 +1296,7 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. EXPANDED ADMIN WORKSPACE (WITH ACCOUNT DELETION & DISPUTE-ONLY ALERT TRIAGE)
+# 6. EXPANDED ADMIN WORKSPACE (DISPUTE-ONLY ALERT TRIAGE & AUTO-DISAPPEAR)
 # =============================================================================
 
 def render_admin_student_profile(admin_user, student_id):
@@ -1534,7 +1534,9 @@ def render_admin_workspace(user):
     open_disputes = conn.execute("SELECT COUNT(*) c FROM disputes WHERE status IN ('OPEN','UNDER_REVIEW')").fetchone()["c"]
     held_escrow = conn.execute("SELECT COALESCE(SUM(amount), 0) s FROM transactions WHERE status='HELD'").fetchone()["s"]
     active_deliveries = conn.execute("SELECT COUNT(*) c FROM requests WHERE status NOT IN ('COMPLETED', 'CANCELLED')").fetchone()["c"]
-    unread_admin_notifs = conn.execute("SELECT COUNT(*) c FROM admin_notifications WHERE is_read=0").fetchone()["c"]
+    
+    # Count only non-dispute alerts for the metric badge
+    unread_admin_notifs = conn.execute("SELECT COUNT(*) c FROM admin_notifications WHERE is_read=0 AND category != 'DISPUTE'").fetchone()["c"]
     conn.close()
 
     m1, m2, m3, m4, m5 = st.columns(5)
@@ -1558,82 +1560,40 @@ def render_admin_workspace(user):
 
     with adm_tabs[0]:
         st.markdown("#### 🔔 System Alerts & Immediate Actions")
-        st.caption("Note: Approved registrations and unlocked accounts automatically disappear from this list. Only active/open dispute alerts remain until resolved.")
+        st.caption("Note: Approved registrations and unlocked accounts automatically disappear from this list. Dispute notifications are managed inside the Dispute Queue.")
         
         conn = get_conn()
-        # Fetch non-dispute alerts that are unread OR dispute alerts that are open
+        # EXCLUDE DISPUTES FROM ADMIN ALERTS TAB COMPLETELY
         notifs = conn.execute(
-            "SELECT * FROM admin_notifications WHERE is_read = 0 OR category = 'DISPUTE' ORDER BY id DESC LIMIT 50"
+            "SELECT * FROM admin_notifications WHERE category != 'DISPUTE' ORDER BY id DESC LIMIT 50"
         ).fetchall()
         conn.close()
 
-        if st.button("Mark All Alerts as Read (Except Disputes)"):
+        if st.button("Mark All Alerts as Read"):
             conn = get_conn()
-            conn.execute("UPDATE admin_notifications SET is_read = 1 WHERE category != 'DISPUTE'")
+            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE category != 'DISPUTE'")
             conn.commit()
             conn.close()
             st.rerun()
 
         if not notifs:
-            st.info("No incoming alerts at this time.")
+            st.info("No incoming non-dispute alerts at this time.")
         for n in notifs:
             with st.container(border=True):
-                icon = "⚠️" if n["category"] == "DISPUTE" else "👤"
+                icon = "👤"
                 badge = "🔴 UNREAD" if not n["is_read"] else "⚪ Read"
                 st.markdown(f"**{icon} [{n['category']}] Ref: `{n['reference_id']}`** — `{badge}`")
                 st.write(n["message"])
                 st.caption(f"Logged at: {n['created_at'][:19].replace('T', ' ')}")
 
-                if n["category"] == "DISPUTE":
-                    parsed_d_id = parse_task_id(n["reference_id"])
-                    act_c1, act_c2, act_c3, act_c4 = st.columns(4)
-                    with act_c1:
-                        if st.button("🔎 Review In Dispute Tab", key=f"alert_rev_{n['id']}", use_container_width=True):
-                            conn = get_conn()
-                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
-                            conn.commit()
-                            conn.close()
-                            st.rerun()
-                    with act_c2:
-                        if st.button("✅ Resolve & Release", key=f"alert_res_{n['id']}", use_container_width=True):
-                            conn = get_conn()
-                            conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE transaction_id=?", (now_iso(), parsed_d_id))
-                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
-                            conn.commit()
-                            conn.close()
-                            update_transaction_status("DELIVERY", parsed_d_id, "RELEASED")
-                            update_transaction_status("BORROWING", parsed_d_id, "RELEASED")
-                            update_transaction_status("TASK", parsed_d_id, "RELEASED")
-                            st.success(f"Dispute {n['reference_id']} resolved and escrow released.")
-                            st.rerun()
-                    with act_c3:
-                        if st.button("❌ Dismiss & Refund", key=f"alert_rej_{n['id']}", use_container_width=True):
-                            conn = get_conn()
-                            conn.execute("UPDATE disputes SET status='REJECTED', resolved_at=? WHERE transaction_id=?", (now_iso(), parsed_d_id))
-                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
-                            conn.commit()
-                            conn.close()
-                            update_transaction_status("DELIVERY", parsed_d_id, "CANCELLED")
-                            update_transaction_status("BORROWING", parsed_d_id, "CANCELLED")
-                            update_transaction_status("TASK", parsed_d_id, "CANCELLED")
-                            st.info(f"Dispute {n['reference_id']} dismissed and refunded.")
-                            st.rerun()
-                    with act_c4:
-                        if st.button("Dismiss Alert", key=f"alert_dism_{n['id']}", use_container_width=True):
-                            conn = get_conn()
-                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
-                            conn.commit()
-                            conn.close()
-                            st.rerun()
-
-                elif n["category"] in ("NEW_ACCOUNT", "OTP_LOCKOUT"):
+                if n["category"] in ("NEW_ACCOUNT", "OTP_LOCKOUT"):
                     act_c1, act_c2 = st.columns(2)
                     with act_c1:
                         btn_txt = "✅ Approve Registration" if n["category"] == "NEW_ACCOUNT" else "🔓 Unlock Account"
                         if st.button(btn_txt, key=f"alert_appr_{n['id']}", use_container_width=True):
                             conn = get_conn()
                             conn.execute("UPDATE users SET verified=1, is_suspended=0, lockout_at=NULL WHERE student_id=?", (n["reference_id"],))
-                            # Delete alert so it disappears from queue upon approval
+                            # Automatically delete notification upon approval so it disappears
                             conn.execute("DELETE FROM admin_notifications WHERE id=?", (n["id"],))
                             u_target = conn.execute("SELECT id FROM users WHERE student_id=?", (n["reference_id"],)).fetchone()
                             conn.commit()
