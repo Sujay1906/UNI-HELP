@@ -337,8 +337,16 @@ def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
 
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(borrow_requests)").fetchall()}
-    if "location" not in cols:
+    # Ensure lockout_at column exists on users table
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "lockout_at" not in cols:
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN lockout_at TEXT")
+        except Exception:
+            pass
+
+    cols_borrow = {row[1] for row in conn.execute("PRAGMA table_info(borrow_requests)").fetchall()}
+    if "location" not in cols_borrow:
         try:
             conn.execute("ALTER TABLE borrow_requests ADD COLUMN location TEXT DEFAULT '34 - 301'")
         except Exception:
@@ -512,7 +520,7 @@ def verify_otp(user_id, purpose, reference_id, submitted_otp):
         
         # Check if max attempts reached -> Trigger OTP Lockout & Admin Approval Escalation
         if remaining <= 0:
-            conn.execute("UPDATE users SET is_suspended = 2 WHERE id = ?", (user_id,))
+            conn.execute("UPDATE users SET is_suspended = 2, lockout_at = ? WHERE id = ?", (now_iso(), user_id))
             conn.commit()
             u_info = conn.execute("SELECT full_name, student_id FROM users WHERE id = ?", (user_id,)).fetchone()
             notify_admin(
@@ -521,7 +529,7 @@ def verify_otp(user_id, purpose, reference_id, submitted_otp):
                 f"Student {u_info['full_name'] if u_info else user_id} locked out after 5 incorrect OTP attempts. Approval required."
             )
             conn.close()
-            return False, "Maximum incorrect OTP attempts reached. Your login request has been sent to the admin for manual approval."
+            return False, "Maximum incorrect OTP attempts reached. Your account is now locked awaiting proctor approval."
 
         conn.close()
         return False, f"Invalid OTP code. {max(remaining, 0)} attempt(s) remaining."
@@ -597,7 +605,7 @@ def send_password_reset_email(user_row):
     return sent, msg, raw_token
 
 # =============================================================================
-# 3. QUERIES & SEED DATA
+# 3. QUERIES & SEED DATA (DEMO STUDENTS REMOVED)
 # =============================================================================
 
 def seed_demo_data():
@@ -789,6 +797,37 @@ h1, h2, h3, h4, h5, h6 {
     color: #00a884 !important;
 }
 
+/* --- TRUE FIXED BOTTOM NAVIGATION BAR --- */
+.fixed-bottom-nav {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #111b21;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    padding: 10px 0;
+    z-index: 99999;
+    box-shadow: 0 -4px 20px rgba(0,0,0,0.5);
+}
+
+.nav-item {
+    color: #8696a0;
+    text-decoration: none;
+    font-size: 0.78rem;
+    font-weight: 700;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+
+.nav-item.active {
+    color: #00a884;
+}
+
 /* --- TRUE GLOBAL FLOATING ACTION BUTTON (FAB) --- */
 .fab-btn-fixed {
     position: fixed;
@@ -976,7 +1015,23 @@ def render_student_login():
                     user = user_by_student_id_or_email(sid)
                     if user and check_password_hash(user["password_hash"], pwd):
                         if user["is_suspended"] == 2:
-                            st.warning("Your account is locked due to incorrect OTP attempts (5 fails). Waiting for admin approval or 1-hour auto-reset.")
+                            # Check if 1 hour has elapsed since lockout
+                            if user["lockout_at"]:
+                                lock_time = parse_iso(user["lockout_at"])
+                                if datetime.utcnow() > lock_time + timedelta(hours=1):
+                                    conn = get_conn()
+                                    conn.execute("UPDATE users SET is_suspended = 0, lockout_at = NULL WHERE id = ?", (user["id"],))
+                                    conn.commit()
+                                    conn.close()
+                                    user["is_suspended"] = 0
+                                else:
+                                    st.session_state["locked_user"] = dict(user)
+                                    st.session_state["auth_mode"] = "otp_locked"
+                                    st.rerun()
+                            else:
+                                st.session_state["locked_user"] = dict(user)
+                                st.session_state["auth_mode"] = "otp_locked"
+                                st.rerun()
                         elif user["is_suspended"] == 1:
                             st.error("Account suspended. Contact proctor.")
                         elif not user["verified"]:
@@ -1030,14 +1085,72 @@ def render_student_otp():
                 st.rerun()
             else:
                 st.error(msg)
-                if "Maximum incorrect OTP attempts" in msg:
+                if "locked" in msg.lower():
+                    # Transition to locked timer screen
+                    fresh_u = user_by_id(user["id"])
+                    st.session_state["locked_user"] = dict(fresh_u)
                     st.session_state.pop("pending_student_user", None)
-                    st.session_state["auth_mode"] = "student_login"
+                    st.session_state["auth_mode"] = "otp_locked"
                     st.rerun()
 
         if st.button("← Back to Sign In", use_container_width=True):
             show_handshake_loader("Returning...")
             st.session_state.pop("pending_student_user", None)
+            st.session_state["auth_mode"] = "student_login"
+            st.rerun()
+
+def render_otp_locked():
+    user = st.session_state.get("locked_user")
+    if not user:
+        st.session_state["auth_mode"] = "student_login"
+        st.rerun()
+
+    # Check live DB status to see if admin approved/unlocked
+    fresh_u = user_by_id(user["id"])
+    if fresh_u["is_suspended"] == 0:
+        st.session_state["user"] = dict(fresh_u)
+        st.session_state.pop("locked_user", None)
+        st.session_state["auth_mode"] = "student_login"
+        st.success("Admin has approved your login request! Logging you in...")
+        time.sleep(1)
+        st.rerun()
+
+    # Calculate 1 hour countdown timer from lockout_at
+    lockout_time = parse_iso(fresh_u["lockout_at"]) if fresh_u["lockout_at"] else datetime.utcnow()
+    expiry_time = lockout_time + timedelta(hours=1)
+    remaining_seconds = (expiry_time - datetime.utcnow()).total_seconds()
+
+    col1, col2, col3 = st.columns([0.1, 2, 0.1])
+    with col2:
+        st.markdown("<h2 style='text-align:center;'>⏳ Login Request Pending</h2>", unsafe_allow_html=True)
+        st.caption("You entered the incorrect OTP 5 times. Your account has been locked and sent to the university proctor for manual review and approval.")
+
+        with st.container(border=True):
+            if remaining_seconds > 0:
+                mins = int(remaining_seconds // 60)
+                secs = int(remaining_seconds % 60)
+                st.markdown(f"<h3 style='text-align:center; color:#00a884;'>Time Remaining: {mins:02d}:{secs:02d}</h3>", unsafe_allow_html=True)
+                st.progress(max(0.0, min(1.0, remaining_seconds / 3600.0)))
+                st.caption("If admin does not approve within 1 hour, your account lockout will automatically expire.")
+            else:
+                # Auto unlock after 1 hour
+                conn = get_conn()
+                conn.execute("UPDATE users SET is_suspended = 0, lockout_at = NULL WHERE id = ?", (user["id"],))
+                conn.commit()
+                conn.close()
+                st.success("Lockout period of 1 hour has expired! You can now log in.")
+                if st.button("Proceed to Sign In"):
+                    st.session_state.pop("locked_user", None)
+                    st.session_state["auth_mode"] = "student_login"
+                    st.rerun()
+
+            st.write("")
+            if st.button("🔄 Check Approval Status", use_container_width=True, type="primary"):
+                st.rerun()
+
+        st.write("")
+        if st.button("← Return to Sign In", use_container_width=True):
+            st.session_state.pop("locked_user", None)
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
@@ -1229,7 +1342,7 @@ def render_admin_student_profile(admin_user, student_id):
             st.markdown("##### Moderation Actions")
             if student["is_suspended"] > 0:
                 if st.button("Unlock / Unsuspend Account", use_container_width=True):
-                    conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (student["id"],))
+                    conn.execute("UPDATE users SET is_suspended=0, lockout_at=NULL WHERE id=?", (student["id"],))
                     conn.commit()
                     log_admin_action(admin_user["id"], "UNSUSPEND_USER", student["id"], "Account unlocked by admin")
                     st.success("User account unlocked.")
@@ -1250,7 +1363,7 @@ def render_admin_student_profile(admin_user, student_id):
                     st.rerun()
             else:
                 if st.button("Verify & Approve Student Account", use_container_width=True):
-                    conn.execute("UPDATE users SET verified=1, is_suspended=0 WHERE id=?", (student["id"],))
+                    conn.execute("UPDATE users SET verified=1, is_suspended=0, lockout_at=NULL WHERE id=?", (student["id"],))
                     conn.commit()
                     log_admin_action(admin_user["id"], "GRANT_VERIFICATION", student["id"])
                     notify(student["id"], "Your student account and login lockout have been approved by administration!")
@@ -1520,7 +1633,7 @@ def render_admin_workspace(user):
                         btn_txt = "✅ Approve Registration" if n["category"] == "NEW_ACCOUNT" else "🔓 Unlock Account"
                         if st.button(btn_txt, key=f"alert_appr_{n['id']}", use_container_width=True):
                             conn = get_conn()
-                            conn.execute("UPDATE users SET verified=1, is_suspended=0 WHERE student_id=?", (n["reference_id"],))
+                            conn.execute("UPDATE users SET verified=1, is_suspended=0, lockout_at=NULL WHERE student_id=?", (n["reference_id"],))
                             conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
                             u_target = conn.execute("SELECT id FROM users WHERE student_id=?", (n["reference_id"],)).fetchone()
                             conn.commit()
@@ -2091,7 +2204,7 @@ def render_student_workspace(user):
                 st.write(n["message"])
                 st.caption(n["created_at"][:16].replace("T", " "))
 
-        if notifs and st.button("Mark All As Read"):
+        if not notifs and st.button("Mark All As Read"):
             conn = get_conn()
             conn.execute("UPDATE notifications SET is_read=1 WHERE user_id=?", (user["id"],))
             conn.commit(); conn.close()
@@ -2164,6 +2277,8 @@ def main():
             render_admin_login()
         elif mode == "student_otp":
             render_student_otp()
+        elif mode == "otp_locked":
+            render_otp_locked()
         elif mode == "forgot_password":
             render_forgot_password()
         elif mode == "reset_password":
