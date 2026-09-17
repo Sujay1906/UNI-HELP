@@ -15,13 +15,10 @@ import ssl
 import math
 import io
 import time
-import re
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import streamlit as st
-import streamlit.components.v1 as components
 from werkzeug.security import generate_password_hash, check_password_hash
 import qrcode
 from dotenv import load_dotenv
@@ -41,14 +38,26 @@ PHOTOS_DIR = os.path.join(UPLOADS_DIR, "photos")
 UNIVERSITY_EMAIL_DOMAIN = os.getenv("UNIVERSITY_EMAIL_DOMAIN", "@student.university.edu")
 OTP_EXPIRY_MINUTES = 5
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
-LOCATION_RADIUS_METERS = float(os.getenv("LOCATION_RADIUS_METERS", "100"))
-QR_EXPIRY_MINUTES = int(os.getenv("QR_EXPIRY_MINUTES", "30"))
+PASSWORD_RESET_EXPIRY_HOURS = 2
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@unihelp.local")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "AdminUniHelp123!")
 
-MIN_REWARD = float(os.getenv("MIN_REWARD", "0"))
-MAX_REWARD = float(os.getenv("MAX_REWARD", "5000"))
+# SMTP setup (Uses Streamlit Secrets or Environment Variables)
+try:
+    SMTP_HOST = str(st.secrets.get("SMTP_HOST", os.getenv("SMTP_HOST", "smtp.gmail.com"))).strip()
+    SMTP_PORT = int(st.secrets.get("SMTP_PORT", os.getenv("SMTP_PORT", 587)))
+    SMTP_USERNAME = str(st.secrets.get("SMTP_USERNAME", os.getenv("SMTP_USERNAME", ""))).strip()
+    SMTP_PASSWORD = str(st.secrets.get("SMTP_PASSWORD", os.getenv("SMTP_PASSWORD", ""))).strip()
+    APP_URL = str(st.secrets.get("APP_URL", os.getenv("APP_URL", "http://localhost:8501"))).strip().rstrip("/")
+except Exception:
+    SMTP_HOST = "smtp.gmail.com"
+    SMTP_PORT = 587
+    SMTP_USERNAME = ""
+    SMTP_PASSWORD = ""
+    APP_URL = "http://localhost:8501"
+
+EMAIL_CONFIGURED = bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSWORD)
 
 for d in (UPLOADS_DIR, QR_DIR, PHOTOS_DIR):
     os.makedirs(d, exist_ok=True)
@@ -69,7 +78,7 @@ CREATE TABLE IF NOT EXISTS users (
     full_name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     phone TEXT,
-    student_id TEXT,
+    student_id TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'student',
     verified INTEGER NOT NULL DEFAULT 0,
@@ -78,112 +87,16 @@ CREATE TABLE IF NOT EXISTS users (
     rating_sum INTEGER NOT NULL DEFAULT 0,
     rating_count INTEGER NOT NULL DEFAULT 0,
     unicoins INTEGER NOT NULL DEFAULT 0,
-    profile_photo_path TEXT,
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS requests (
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    requester_id INTEGER NOT NULL REFERENCES users(id),
-    helper_id INTEGER REFERENCES users(id),
-    item_name TEXT NOT NULL,
-    description TEXT,
-    pickup_location TEXT NOT NULL,
-    destination TEXT NOT NULL,
-    pickup_lat REAL,
-    pickup_lng REAL,
-    dest_lat REAL,
-    dest_lng REAL,
-    reward REAL NOT NULL,
-    preferred_time TEXT,
-    notes TEXT,
-    status TEXT NOT NULL DEFAULT 'CREATED',
-    created_at TEXT NOT NULL,
-    accepted_at TEXT,
-    pickup_verified_at TEXT,
-    delivered_at TEXT,
-    completed_at TEXT,
-    cancelled_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_id INTEGER NOT NULL REFERENCES users(id),
-    item_name TEXT NOT NULL,
-    category TEXT,
-    description TEXT,
-    condition TEXT,
-    photo_path TEXT,
-    availability TEXT,
-    deposit REAL NOT NULL DEFAULT 0,
-    rules TEXT,
-    status TEXT NOT NULL DEFAULT 'AVAILABLE',
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS borrowings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id INTEGER NOT NULL REFERENCES items(id),
-    owner_id INTEGER NOT NULL REFERENCES users(id),
-    borrower_id INTEGER NOT NULL REFERENCES users(id),
-    status TEXT NOT NULL DEFAULT 'REQUESTED',
-    expected_return TEXT,
-    start_date TEXT,
-    actual_return TEXT,
-    deposit REAL NOT NULL DEFAULT 0,
-    pickup_verified INTEGER NOT NULL DEFAULT 0,
-    return_verified INTEGER NOT NULL DEFAULT 0,
-    condition_photo_start TEXT,
-    condition_photo_end TEXT,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    creator_id INTEGER NOT NULL REFERENCES users(id),
-    helper_id INTEGER REFERENCES users(id),
-    title TEXT NOT NULL,
-    description TEXT,
-    pickup TEXT,
-    destination TEXT,
-    reward REAL NOT NULL,
-    deadline TEXT,
-    category TEXT,
-    status TEXT NOT NULL DEFAULT 'CREATED',
-    created_at TEXT NOT NULL,
-    accepted_at TEXT,
-    completed_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    payer_id INTEGER REFERENCES users(id),
-    payee_id INTEGER REFERENCES users(id),
-    related_type TEXT NOT NULL,
-    related_id INTEGER NOT NULL,
-    amount REAL NOT NULL,
-    status TEXT NOT NULL DEFAULT 'PENDING',
-    created_at TEXT NOT NULL,
-    updated_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS ratings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    transaction_type TEXT NOT NULL,
-    transaction_id INTEGER NOT NULL,
-    rater_id INTEGER NOT NULL REFERENCES users(id),
-    ratee_id INTEGER NOT NULL REFERENCES users(id),
-    stars INTEGER NOT NULL,
-    review TEXT,
-    created_at TEXT NOT NULL,
-    UNIQUE(transaction_type, transaction_id, rater_id)
-);
-
-CREATE TABLE IF NOT EXISTS notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL REFERENCES users(id),
-    message TEXT NOT NULL,
-    is_read INTEGER NOT NULL DEFAULT 0,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT UNIQUE NOT NULL,
+    raw_token_preview TEXT,
+    expires_at TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
@@ -200,14 +113,77 @@ CREATE TABLE IF NOT EXISTS otp_records (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS qr_tokens (
+CREATE TABLE IF NOT EXISTS requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    reference_type TEXT NOT NULL,
-    reference_id INTEGER NOT NULL,
-    purpose TEXT NOT NULL,
-    token TEXT UNIQUE NOT NULL,
-    used INTEGER NOT NULL DEFAULT 0,
-    expires_at TEXT NOT NULL,
+    requester_id INTEGER NOT NULL REFERENCES users(id),
+    helper_id INTEGER REFERENCES users(id),
+    item_name TEXT NOT NULL,
+    description TEXT,
+    pickup_location TEXT NOT NULL,
+    destination TEXT NOT NULL,
+    reward REAL NOT NULL,
+    preferred_time TEXT,
+    status TEXT NOT NULL DEFAULT 'CREATED',
+    created_at TEXT NOT NULL,
+    accepted_at TEXT,
+    pickup_verified_at TEXT,
+    delivered_at TEXT,
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    item_name TEXT NOT NULL,
+    category TEXT,
+    condition TEXT,
+    deposit REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'AVAILABLE',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS borrowings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL REFERENCES items(id),
+    owner_id INTEGER NOT NULL REFERENCES users(id),
+    borrower_id INTEGER NOT NULL REFERENCES users(id),
+    deposit REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'REQUESTED',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    creator_id INTEGER NOT NULL REFERENCES users(id),
+    helper_id INTEGER REFERENCES users(id),
+    title TEXT NOT NULL,
+    description TEXT,
+    pickup TEXT,
+    destination TEXT,
+    reward REAL NOT NULL,
+    deadline TEXT,
+    category TEXT,
+    status TEXT NOT NULL DEFAULT 'CREATED',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    payer_id INTEGER REFERENCES users(id),
+    payee_id INTEGER REFERENCES users(id),
+    related_type TEXT NOT NULL,
+    related_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'HELD',
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    message TEXT NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
@@ -218,7 +194,6 @@ CREATE TABLE IF NOT EXISTS disputes (
     reporter_id INTEGER NOT NULL REFERENCES users(id),
     category TEXT NOT NULL,
     description TEXT,
-    evidence_path TEXT,
     status TEXT NOT NULL DEFAULT 'OPEN',
     created_at TEXT NOT NULL,
     resolved_at TEXT
@@ -232,31 +207,14 @@ CREATE TABLE IF NOT EXISTS unicoin_transactions (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS locations (
+CREATE TABLE IF NOT EXISTS qr_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     reference_type TEXT NOT NULL,
     reference_id INTEGER NOT NULL,
-    lat REAL NOT NULL,
-    lng REAL NOT NULL,
-    is_demo INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS chat_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_type TEXT NOT NULL,
-    reference_id INTEGER NOT NULL,
-    sender_id INTEGER NOT NULL REFERENCES users(id),
-    message TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS admin_actions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    admin_id INTEGER NOT NULL REFERENCES users(id),
-    action TEXT NOT NULL,
-    target_id INTEGER,
-    details TEXT,
+    purpose TEXT NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 """
@@ -293,94 +251,31 @@ def init_db():
     conn.close()
 
 # =============================================================================
-# 2. CORE HELPERS: SEED, AUTH & TOKENS
+# 2. EMAIL & TOKEN UTILITIES
 # =============================================================================
 
-DEMO_STUDENTS = [
-    ("Aarav Sharma", "aarav.sharma", "9990001111", "STU1001"),
-    ("Priya Nair", "priya.nair", "9990002222", "STU1002"),
-    ("Rohan Mehta", "rohan.mehta", "9990003333", "STU1003"),
-]
-
-def seed_demo_data():
-    conn = get_conn()
-    created_ids = []
-    for full_name, local, phone, sid in DEMO_STUDENTS:
-        email = f"{local}{UNIVERSITY_EMAIL_DOMAIN}"
-        existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
-        if existing:
-            created_ids.append(existing["id"])
-            continue
-        conn.execute(
-            """INSERT INTO users (full_name, email, phone, student_id, password_hash, role,
-                verified, trust_score, unicoins, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (full_name, email, phone, sid, generate_password_hash("demo1234"), "student", 1, 60, 50, now_iso()),
-        )
-        created_ids.append(conn.execute("SELECT last_insert_rowid() id").fetchone()["id"])
-    conn.commit()
-
-    s1, s2, s3 = created_ids[0], created_ids[1], created_ids[2]
-
-    # Seed delivery requests if empty
-    if not conn.execute("SELECT id FROM requests LIMIT 1").fetchone():
-        deliveries = [
-            (s1, "Data Structures Textbook", "Need reserve copy brought to hostel", "Central Library", "Hostel Block C", 30),
-            (s2, "Lab Coat & Safety Glasses", "Left behind in Organic Chem lab", "Chemistry Building", "Hostel Block A", 20),
-            (s3, "Canteen Meal Tray", "Veg thali, packed parcel", "Main Canteen", "Engineering Block", 25),
-        ]
-        for requester, item, desc, pickup, dest, reward in deliveries:
-            conn.execute(
-                """INSERT INTO requests (requester_id, item_name, description, pickup_location,
-                    destination, reward, preferred_time, notes, status, created_at)
-                   VALUES (?,?,?,?,?,?,?,?, 'CREATED', ?)""",
-                (requester, item, desc, pickup, dest, reward, "Today, before 6 PM", "", now_iso()),
-            )
-
-    # Seed borrowable items if empty
-    if not conn.execute("SELECT id FROM items LIMIT 1").fetchone():
-        items = [
-            (s1, "Scientific Calculator FX-991EX", "Electronics", "Solar powered, perfect for exams", "Good", 100),
-            (s2, "USB-C Laptop Fast Charger (65W)", "Electronics", "Original OEM adapter", "Excellent", 150),
-            (s3, "English Willow Cricket Bat", "Sports", "Lightly oiled, ready for turf matches", "Good", 120),
-        ]
-        for owner, name, cat, desc, cond, dep in items:
-            conn.execute(
-                """INSERT INTO items (owner_id, item_name, category, description, condition,
-                    availability, deposit, rules, status, created_at)
-                   VALUES (?,?,?,?,?, 'Weekdays', ?, 'Return undamaged', 'AVAILABLE', ?)""",
-                (owner, name, cat, desc, cond, dep, now_iso()),
-            )
-
-    # Seed micro-tasks if empty
-    if not conn.execute("SELECT id FROM tasks LIMIT 1").fetchone():
-        tasks = [
-            (s1, "Collect Courier from Main Gate", "Sign for postal package and bring to room 204", "Main Gate", "Hostel Block C", 25, "Today 5 PM", "Errand"),
-            (s2, "Setup Projector for Club Meeting", "Connect HDMI, setup tripod in seminar room", "AV Hub", "Room 402", 35, "Today 6 PM", "Setup"),
-            (s3, "Print & Bind Study Notes", "30 pages color printout, spiral bound", "Print Depot", "Block B", 20, "Tomorrow 10 AM", "Errand"),
-        ]
-        for creator, title, desc, pickup, dest, reward, dead, cat in tasks:
-            conn.execute(
-                """INSERT INTO tasks (creator_id, title, description, pickup, destination, reward,
-                    deadline, category, status, created_at)
-                   VALUES (?,?,?,?,?,?,?,?, 'CREATED', ?)""",
-                (creator, title, desc, pickup, dest, reward, dead, cat, now_iso()),
-            )
-
-    conn.commit()
-    conn.close()
-
-def user_by_id(user_id):
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    conn.close()
-    return row
-
-def user_by_email(email):
-    conn = get_conn()
-    row = conn.execute("SELECT * FROM users WHERE lower(email) = ?", (email.strip().lower(),)).fetchone()
-    conn.close()
-    return row
+def send_realtime_email(to_email, subject, body):
+    """Sends a real-time email via SMTP if configured; saves last status in session."""
+    if not EMAIL_CONFIGURED:
+        st.session_state["_last_email_simulated"] = (to_email, subject, body)
+        return True
+    try:
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = SMTP_USERNAME
+        msg["To"] = to_email
+        context = ssl.create_default_context()
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.sendmail(SMTP_USERNAME, [to_email], msg.as_string())
+        return True
+    except Exception as e:
+        st.session_state["_last_email_error"] = str(e)
+        st.session_state["_last_email_simulated"] = (to_email, subject, body)
+        return False
 
 def create_otp(user_id, purpose, reference_id=None):
     conn = get_conn()
@@ -414,81 +309,156 @@ def verify_otp(user_id, purpose, reference_id, submitted_otp):
 
     if row is None:
         conn.close()
-        return False, "No active code found. Generate a new one."
+        return False, "No active OTP found. Please request a new one."
 
     if row["attempts"] >= row["max_attempts"]:
         conn.close()
-        return False, "Too many attempts. Generate a new code."
+        return False, "Too many incorrect attempts. Request a new OTP."
 
     if datetime.utcnow() > parse_iso(row["expires_at"]):
         conn.close()
-        return False, "Code expired. Request a new one."
+        return False, "OTP has expired. Request a new one."
 
     if not check_password_hash(row["otp_hash"], submitted_otp.strip()):
         conn.execute("UPDATE otp_records SET attempts = attempts + 1 WHERE id = ?", (row["id"],))
         conn.commit()
         remaining = row["max_attempts"] - (row["attempts"] + 1)
         conn.close()
-        return False, f"Incorrect code. {max(remaining, 0)} attempt(s) left."
+        return False, f"Invalid OTP code. {max(remaining, 0)} attempt(s) remaining."
 
     conn.execute("UPDATE otp_records SET used = 1 WHERE id = ?", (row["id"],))
     conn.commit()
     conn.close()
     return True, "Verified successfully."
 
-def create_qr_token(reference_type, reference_id, purpose):
+def create_password_reset_token(user_id):
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = generate_password_hash(raw_token)
+    expires_at = (datetime.utcnow() + timedelta(hours=PASSWORD_RESET_EXPIRY_HOURS)).isoformat()
     conn = get_conn()
+    conn.execute("UPDATE password_reset_tokens SET used = 1 WHERE user_id = ? AND used = 0", (user_id,))
     conn.execute(
-        """UPDATE qr_tokens SET used = 1
-           WHERE reference_type = ? AND reference_id = ? AND purpose = ? AND used = 0""",
-        (reference_type, reference_id, purpose),
-    )
-    token = f"UNIHELP|{reference_type}|{reference_id}|{secrets.token_urlsafe(8)}"
-    expires_at = (datetime.utcnow() + timedelta(minutes=QR_EXPIRY_MINUTES)).isoformat()
-    conn.execute(
-        """INSERT INTO qr_tokens (reference_type, reference_id, purpose, token, used, expires_at, created_at)
-           VALUES (?,?,?,?,0,?,?)""",
-        (reference_type, reference_id, purpose, token, expires_at, now_iso()),
+        """INSERT INTO password_reset_tokens (user_id, token_hash, raw_token_preview, expires_at, used, created_at)
+           VALUES (?, ?, ?, ?, 0, ?)""",
+        (user_id, token_hash, raw_token[:8], expires_at, now_iso()),
     )
     conn.commit()
     conn.close()
-    return token
+    return raw_token
 
-def verify_qr_token(submitted_token, reference_type, reference_id, purpose):
+def verify_and_consume_password_reset_token(raw_token):
+    raw_token = (raw_token or "").strip()
+    if not raw_token:
+        return None, "Empty token provided."
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM password_reset_tokens WHERE used = 0 ORDER BY id DESC").fetchall()
+    matched = None
+    for r in rows:
+        if check_password_hash(r["token_hash"], raw_token):
+            matched = r
+            break
+    if not matched:
+        conn.close()
+        return None, "Invalid or already used password reset link."
+    if datetime.utcnow() > parse_iso(matched["expires_at"]):
+        conn.close()
+        return None, "Password reset link has expired."
+    user_id = matched["user_id"]
+    conn.execute("UPDATE password_reset_tokens SET used = 1 WHERE id = ?", (matched["id"],))
+    conn.commit()
+    conn.close()
+    return user_id, "Token valid."
+
+def send_login_otp_email(user_row):
+    otp = create_otp(user_row["id"], "STUDENT_LOGIN_OTP")
+    subject = "UNI HELP — Your Login Verification Code"
+    body = (
+        f"Hello {user_row['full_name']},\n\n"
+        f"Your login verification code for UNI HELP is: {otp}\n\n"
+        f"This code will expire in {OTP_EXPIRY_MINUTES} minutes. If you did not attempt to sign in, "
+        f"please secure your account immediately.\n\n"
+        f"— UNI HELP Security Team"
+    )
+    send_realtime_email(user_row["email"], subject, body)
+    return otp
+
+def send_password_reset_email(user_row):
+    raw_token = create_password_reset_token(user_row["id"])
+    reset_link = f"{APP_URL}/?reset_token={raw_token}"
+    subject = "UNI HELP — Password Reset Request"
+    body = (
+        f"Hello {user_row['full_name']},\n\n"
+        f"We received a request to reset your password for your UNI HELP student account.\n\n"
+        f"Click the link below to set a new password:\n{reset_link}\n\n"
+        f"Or use your manual reset token:\n{raw_token}\n\n"
+        f"This link is valid for {PASSWORD_RESET_EXPIRY_HOURS} hours. If you did not make this request, "
+        f"you can safely ignore this email.\n\n"
+        f"— UNI HELP Support"
+    )
+    send_realtime_email(user_row["email"], subject, body)
+    return raw_token
+
+# =============================================================================
+# 3. SEEDING & RECORD HELPERS
+# =============================================================================
+
+DEMO_STUDENTS = [
+    ("Aarav Sharma", "aarav.sharma", "9990001111", "STU1001"),
+    ("Priya Nair", "priya.nair", "9990002222", "STU1002"),
+    ("Rohan Mehta", "rohan.mehta", "9990003333", "STU1003"),
+]
+
+def seed_demo_data():
+    conn = get_conn()
+    for full_name, local, phone, sid in DEMO_STUDENTS:
+        email = f"{local}{UNIVERSITY_EMAIL_DOMAIN}"
+        existing = conn.execute("SELECT id FROM users WHERE email = ? OR student_id = ?", (email, sid)).fetchone()
+        if not existing:
+            conn.execute(
+                """INSERT INTO users (full_name, email, phone, student_id, password_hash, role,
+                    verified, trust_score, unicoins, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (full_name, email, phone, sid, generate_password_hash("demo1234"), "student", 1, 65, 50, now_iso()),
+            )
+    conn.commit()
+
+    # Seed delivery requests if empty
+    if not conn.execute("SELECT id FROM requests LIMIT 1").fetchone():
+        s1 = conn.execute("SELECT id FROM users WHERE student_id='STU1001'").fetchone()["id"]
+        s2 = conn.execute("SELECT id FROM users WHERE student_id='STU1002'").fetchone()["id"]
+        conn.execute(
+            """INSERT INTO requests (requester_id, item_name, description, pickup_location,
+                destination, reward, preferred_time, status, created_at)
+               VALUES (?, 'Data Structures Textbook', 'Need library reserve copy brought to Block C',
+               'Central Library', 'Hostel Block C', 35, 'Today, by 6 PM', 'CREATED', ?)""",
+            (s1, now_iso()),
+        )
+        conn.execute(
+            """INSERT INTO requests (requester_id, item_name, description, pickup_location,
+                destination, reward, preferred_time, status, created_at)
+               VALUES (?, 'Lab Coat & Safety Goggles', 'Left behind in Chemistry Lab 3',
+               'Chemistry Department', 'Hostel Block A', 25, 'Evening', 'CREATED', ?)""",
+            (s2, now_iso()),
+        )
+        conn.commit()
+
+    conn.close()
+
+def user_by_id(user_id):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    conn.close()
+    return row
+
+def user_by_student_id_or_email(identifier):
+    clean = identifier.strip().lower()
     conn = get_conn()
     row = conn.execute(
-        """SELECT * FROM qr_tokens WHERE token = ? AND reference_type = ?
-           AND reference_id = ? AND purpose = ?""",
-        (submitted_token.strip(), reference_type, reference_id, purpose),
+        "SELECT * FROM users WHERE (lower(student_id) = ? OR lower(email) = ?) AND role = 'student'",
+        (clean, clean),
     ).fetchone()
-    if row is None:
-        conn.close()
-        return False, "Invalid token for this transaction."
-    if row["used"]:
-        conn.close()
-        return False, "Token already used."
-    if datetime.utcnow() > parse_iso(row["expires_at"]):
-        conn.close()
-        return False, "Token expired."
-    conn.execute("UPDATE qr_tokens SET used = 1 WHERE id = ?", (row["id"],))
-    conn.commit()
     conn.close()
-    return True, "QR verified successfully."
-
-def generate_qr_bytes(token):
-    img = qrcode.make(token)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
-
-def haversine_meters(lat1, lon1, lat2, lon2):
-    R = 6371000.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return 2 * R * math.asin(math.sqrt(a))
+    return row
 
 def notify(user_id, message):
     conn = get_conn()
@@ -530,206 +500,305 @@ def update_transaction_status(related_type, related_id, status):
     conn.close()
 
 # =============================================================================
-# 3. APP THEME & INTERFACE SETUP
+# 4. STREAMLIT PAGE CONFIG & GLOBAL STATE
 # =============================================================================
 
 st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", layout="wide")
 
-st.markdown("""
-<style>
-:root {
-  --navy: #091e42;
-  --blue: #2563eb;
-  --sky: #38bdf8;
-  --emerald: #059669;
-  --bg-subtle: #f8fafc;
-}
-.portal-card {
-  background: white;
-  border-radius: 16px;
-  border: 1px solid #e2e8f0;
-  padding: 1.25rem;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
-  margin-bottom: 1rem;
-}
-.status-pill {
-  display: inline-block;
-  padding: 0.2rem 0.6rem;
-  border-radius: 9999px;
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-.pill-held { background: #fef3c7; color: #b45309; }
-.pill-released { background: #dcfce7; color: #15803d; }
-.pill-active { background: #e0f2fe; color: #0369a1; }
-.pill-completed { background: #f0fdf4; color: #166534; }
-.pill-disputed { background: #fee2e2; color: #991b1b; }
-.admin-badge {
-  background: #f1f5f9;
-  border: 1px solid #cbd5e1;
-  color: #334155;
-  padding: 4px 10px;
-  border-radius: 8px;
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-</style>
-""", unsafe_allow_html=True)
-
 init_db()
 seed_demo_data()
+
+# Handle reset token from query parameter if present
+query_params = st.query_params
+if "reset_token" in query_params and "auth_mode" not in st.session_state:
+    st.session_state["auth_mode"] = "reset_password"
+    st.session_state["active_reset_token"] = query_params["reset_token"]
 
 if "user" not in st.session_state:
     st.session_state["user"] = None
 if "auth_mode" not in st.session_state:
-    st.session_state["auth_mode"] = "student"  # 'student', 'register', or 'admin_login'
-if "active_tab" not in st.session_state:
-    st.session_state["active_tab"] = "Delivery"
+    st.session_state["auth_mode"] = "student_login"  # 'student_login', 'student_otp', 'forgot_password', 'reset_password', 'register', 'admin_login'
+
+# Helper for simulated email display notification when SMTP is off
+def show_simulated_email_banner():
+    if "_last_email_simulated" in st.session_state:
+        to_addr, subj, body = st.session_state["_last_email_simulated"]
+        with st.expander(f"📬 Real-time Dispatch Preview (Sent to: {to_addr})", expanded=True):
+            st.caption(f"**Subject:** {subj}")
+            st.code(body, language="text")
 
 # =============================================================================
-# 4. AUTHENTICATION SCREENS (SEPARATED ADMIN VS STUDENT)
+# 5. AUTHENTICATION MODULES
 # =============================================================================
 
-def render_admin_login():
-    col1, col2, col3 = st.columns([1, 1.8, 1])
-    with col2:
-        st.markdown("<h2 style='text-align: center;'>🛡️ Campus Administration Portal</h2>", unsafe_allow_html=True)
-        st.caption("<div style='text-align:center;'>Restricted Proctor & Moderation Access Only</div>", unsafe_allow_html=True)
-        st.write("")
-        with st.form("admin_auth_form"):
-            admin_email = st.text_input("Admin ID / Email", value=ADMIN_EMAIL)
-            admin_pwd = st.text_input("Security Key / Password", type="password", value="AdminUniHelp123!")
-            submitted = st.form_submit_button("Enter Moderation Console", use_container_width=True, type="primary")
-
-        if submitted:
-            conn = get_conn()
-            row = conn.execute("SELECT * FROM users WHERE email=? AND role='admin'", (admin_email.strip().lower(),)).fetchone()
-            conn.close()
-            if row and check_password_hash(row["password_hash"], admin_pwd):
-                st.session_state["user"] = dict(row)
-                st.session_state["auth_mode"] = "student"
-                st.rerun()
-            else:
-                st.error("Access denied. Unauthorized credentials.")
-
-        st.write("")
-        if st.button("← Return to Student Network", use_container_width=True):
-            st.session_state["auth_mode"] = "student"
-            st.rerun()
-
+# --- 5.1 STUDENT LOGIN (STEP 1: STUDENT ID + PASSWORD) ---
 def render_student_login():
     col1, col2, col3 = st.columns([1, 2.2, 1])
     with col2:
-        st.markdown("<h1 style='text-align:center; color:#0f172a; margin-bottom:0;'>🎓 UNI HELP</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align:center; color:#64748b;'>The University Verified Micro-Service Network</p>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align:center;'>🎓 UNI HELP</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center; color:#64748b;'>Verified Student-to-Student Campus Assistance Network</p>", unsafe_allow_html=True)
         st.write("")
 
-        # Interactive quick switch for Hackathon / Presentation demo
+        # Demo Quick Select Helper
         with st.container(border=True):
-            st.markdown("##### ⚡ Quick Student Switcher (Demo Mode)")
-            st.caption("Select a demo student account to sign in immediately:")
-            s_cols = st.columns(3)
-            conn = get_conn()
-            s_rows = conn.execute("SELECT * FROM users WHERE role='student' LIMIT 3").fetchall()
-            conn.close()
+            st.markdown("##### ⚡ Quick Demo Accounts")
+            st.caption("Default password for all demo accounts: `demo1234`")
+            q_cols = st.columns(3)
+            q_cols[0].info("**STU1001**\nAarav S.")
+            q_cols[1].info("**STU1002**\nPriya N.")
+            q_cols[2].info("**STU1003**\nRohan M.")
 
-            for idx, s in enumerate(s_rows):
-                with s_cols[idx]:
-                    if st.button(f"👤 {s['full_name'].split()[0]}", key=f"quick_s_{s['id']}", use_container_width=True):
-                        st.session_state["user"] = dict(s)
-                        st.rerun()
-
-        st.write("")
         with st.container(border=True):
-            st.markdown("##### 🔐 Registered Student Sign In")
-            sid_input = st.text_input("University Email or Student ID", placeholder="aarav.sharma@student.university.edu")
-            pwd_input = st.text_input("Password", type="password", placeholder="••••••••")
+            st.markdown("##### 🔐 Student Authentication")
+            st.caption("Step 1 of 2: Verify Credentials")
 
-            if st.button("Log In as Student", use_container_width=True, type="primary"):
-                conn = get_conn()
-                u_row = conn.execute(
-                    "SELECT * FROM users WHERE (lower(email)=? OR student_id=?) AND role='student'",
-                    (sid_input.strip().lower(), sid_input.strip())
-                ).fetchone()
-                conn.close()
+            sid = st.text_input("Student ID", placeholder="e.g. STU1001", key="login_sid")
+            pwd = st.text_input("Password", type="password", placeholder="••••••••", key="login_pwd")
 
-                if u_row and check_password_hash(u_row["password_hash"], pwd_input):
-                    st.session_state["user"] = dict(u_row)
+            c_btn1, c_btn2 = st.columns([1.5, 1])
+            with c_btn1:
+                send_otp_btn = st.button("Verify & Send Email OTP →", use_container_width=True, type="primary")
+            with c_btn2:
+                if st.button("Forgot Password?", use_container_width=True):
+                    st.session_state["auth_mode"] = "forgot_password"
                     st.rerun()
+
+            if send_otp_btn:
+                if not sid.strip() or not pwd:
+                    st.error("Please provide both Student ID and Password.")
                 else:
-                    st.error("Invalid credentials. Try using a quick switcher account above or check password.")
+                    user = user_by_student_id_or_email(sid)
+                    if user and check_password_hash(user["password_hash"], pwd):
+                        if user["is_suspended"]:
+                            st.error("This student account is currently suspended. Please contact the campus proctor.")
+                        else:
+                            st.session_state["pending_student_user"] = dict(user)
+                            # Generate and send real-time OTP to student's email
+                            send_login_otp_email(user)
+                            st.session_state["auth_mode"] = "student_otp"
+                            st.rerun()
+                    else:
+                        st.error("Invalid Student ID or password. Please try again.")
 
             st.divider()
-            if st.button("Create New Student Account", use_container_width=True):
+            if st.button("Register New Student Account", use_container_width=True):
                 st.session_state["auth_mode"] = "register"
                 st.rerun()
 
-        # Discreet Footer link for Admin Access
-        st.write("")
+        # Discreet Gateway to University Admin Portal
         st.write("")
         st.markdown(
-            "<div style='text-align:center;'><small style='color:#94a3b8;'>Campus Proctor or Staff? </small></div>",
-            unsafe_allow_html=True
+            "<div style='text-align:center;'><small style='color:#94a3b8;'>Authorized University Staff or Proctor? </small></div>",
+            unsafe_allow_html=True,
         )
         if st.button("Access University Admin Portal", use_container_width=True):
             st.session_state["auth_mode"] = "admin_login"
             st.rerun()
 
+# --- 5.2 STUDENT LOGIN (STEP 2: EMAIL OTP VERIFICATION) ---
+def render_student_otp():
+    user = st.session_state.get("pending_student_user")
+    if not user:
+        st.session_state["auth_mode"] = "student_login"
+        st.rerun()
+
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("### 📩 Security Check: Enter OTP")
+        st.caption(f"Step 2 of 2: We sent a 6-digit real-time verification code to **{user['email']}**")
+
+        show_simulated_email_banner()
+
+        otp_val = st.text_input("Enter 6-Digit Email OTP", max_chars=6, placeholder="123456", key="login_otp_input")
+
+        c1, c2 = st.columns([1.5, 1])
+        with c1:
+            if st.button("Verify Code & Log In", use_container_width=True, type="primary"):
+                ok, msg = verify_otp(user["id"], "STUDENT_LOGIN_OTP", None, otp_val)
+                if ok:
+                    st.session_state["user"] = user
+                    st.session_state.pop("pending_student_user", None)
+                    st.session_state.pop("_last_email_simulated", None)
+                    st.session_state["auth_mode"] = "student_login"
+                    st.success("Verification successful! Welcome back.")
+                    st.rerun()
+                else:
+                    st.error(msg)
+        with c2:
+            if st.button("Resend Code", use_container_width=True):
+                send_login_otp_email(user)
+                st.info("A fresh OTP has been dispatched to your email.")
+                st.rerun()
+
+        st.write("")
+        if st.button("← Back to Student Sign In", use_container_width=True):
+            st.session_state.pop("pending_student_user", None)
+            st.session_state["auth_mode"] = "student_login"
+            st.rerun()
+
+# --- 5.3 FORGOT PASSWORD REQUEST ---
+def render_forgot_password():
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("### 🔑 Recover Account Password")
+        st.caption("Enter your Student ID or registered university email. UNI HELP will send a secure password reset link to your inbox.")
+
+        identifier = st.text_input("Student ID or University Email", placeholder="STU1001 or aarav.sharma@student.university.edu")
+
+        if st.button("Send Reset Link to Email", use_container_width=True, type="primary"):
+            if not identifier.strip():
+                st.error("Please enter your Student ID or email.")
+            else:
+                user = user_by_student_id_or_email(identifier)
+                if user:
+                    send_password_reset_email(user)
+                    st.success(f"A password reset link has been dispatched to **{user['email']}**.")
+                else:
+                    # Provide generic success message to prevent user enumeration
+                    st.info("If that account is registered in our system, a reset link has been sent.")
+
+        show_simulated_email_banner()
+
+        st.write("")
+        st.divider()
+        st.markdown("##### Already have your reset token?")
+        manual_tok = st.text_input("Paste Password Reset Token", placeholder="e.g. 32-character token")
+        if st.button("Proceed with Token →", use_container_width=True):
+            if manual_tok.strip():
+                st.session_state["active_reset_token"] = manual_tok.strip()
+                st.session_state["auth_mode"] = "reset_password"
+                st.rerun()
+            else:
+                st.error("Please provide the token.")
+
+        if st.button("← Back to Student Login", use_container_width=True):
+            st.session_state["auth_mode"] = "student_login"
+            st.rerun()
+
+# --- 5.4 RESET PASSWORD SCREEN ---
+def render_reset_password():
+    token = st.session_state.get("active_reset_token", "").strip()
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown("### 🔒 Create New Password")
+        st.caption("Enter and confirm your new account password.")
+
+        new_pw = st.text_input("New Password", type="password", placeholder="At least 6 characters")
+        confirm_pw = st.text_input("Confirm New Password", type="password", placeholder="Repeat new password")
+
+        if st.button("Update Password & Continue", use_container_width=True, type="primary"):
+            if len(new_pw) < 6:
+                st.error("Password must be at least 6 characters.")
+            elif new_pw != confirm_pw:
+                st.error("Passwords do not match.")
+            else:
+                user_id, msg = verify_and_consume_password_reset_token(token)
+                if user_id:
+                    conn = get_conn()
+                    conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (generate_password_hash(new_pw), user_id))
+                    conn.commit()
+                    conn.close()
+                    notify(user_id, "Your UNI HELP password was updated successfully.")
+                    st.success("Your password has been reset! Please sign in with your new credentials.")
+                    st.session_state.pop("active_reset_token", None)
+                    st.session_state.pop("_last_email_simulated", None)
+                    st.session_state["auth_mode"] = "student_login"
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+        if st.button("Cancel & Return to Login", use_container_width=True):
+            st.session_state.pop("active_reset_token", None)
+            st.session_state["auth_mode"] = "student_login"
+            st.rerun()
+
+# --- 5.5 REGISTRATION SCREEN ---
 def render_registration():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.markdown("### 🎓 Register New Student Account")
-        with st.form("student_registration"):
-            name = st.text_input("Full Name", placeholder="Rahul Verma")
-            email = st.text_input("University Email", placeholder="r.verma@student.university.edu")
+        st.markdown("### 🎓 Register Student Account")
+        st.caption("Join your verified campus network.")
+
+        with st.form("reg_form"):
+            name = st.text_input("Full Name", placeholder="Ananya Patel")
+            sid = st.text_input("Student ID (Unique)", placeholder="STU1004")
+            email = st.text_input("University Email", placeholder="ananya.p@student.university.edu")
             phone = st.text_input("Phone Number", placeholder="9876543210")
-            student_id = st.text_input("Student ID (8 digits)", placeholder="12645890")
             pw1 = st.text_input("Password", type="password")
             pw2 = st.text_input("Confirm Password", type="password")
-            reg_submit = st.form_submit_button("Submit & Receive Verification OTP", use_container_width=True, type="primary")
+            submitted = st.form_submit_button("Register & Activate Account", use_container_width=True, type="primary")
 
-        if reg_submit:
+        if submitted:
             if not email.endswith(UNIVERSITY_EMAIL_DOMAIN):
-                st.error(f"Email must end with your university domain: {UNIVERSITY_EMAIL_DOMAIN}")
-            elif pw1 != pw2 or len(pw1) < 6:
-                st.error("Passwords must match and have at least 6 characters.")
+                st.error(f"Email domain must match: {UNIVERSITY_EMAIL_DOMAIN}")
+            elif len(pw1) < 6 or pw1 != pw2:
+                st.error("Passwords must match and be at least 6 characters.")
+            elif not sid.strip() or not name.strip():
+                st.error("Full name and Student ID are required.")
             else:
                 conn = get_conn()
                 try:
                     conn.execute(
                         """INSERT INTO users (full_name, email, phone, student_id, password_hash, role, verified, trust_score, unicoins, created_at)
                            VALUES (?, ?, ?, ?, ?, 'student', 1, 50, 50, ?)""",
-                        (name.strip(), email.strip().lower(), phone.strip(), student_id.strip(), generate_password_hash(pw1), now_iso())
+                        (name.strip(), email.strip().lower(), phone.strip(), sid.strip(), generate_password_hash(pw1), now_iso()),
                     )
                     uid = conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]
                     conn.commit()
                     add_unicoins(uid, 50, "Welcome bonus")
-                    st.success("Account registered and verified with 50 UniCoins welcome reward! Please log in.")
-                    st.session_state["auth_mode"] = "student"
+                    st.success("Account created successfully with 50 UniCoins! Please sign in.")
+                    st.session_state["auth_mode"] = "student_login"
+                    st.rerun()
                 except sqlite3.IntegrityError:
-                    st.error("An account with that email or Student ID already exists.")
+                    st.error("An account with that Student ID or Email already exists.")
                 finally:
                     conn.close()
 
         if st.button("← Back to Student Login", use_container_width=True):
-            st.session_state["auth_mode"] = "student"
+            st.session_state["auth_mode"] = "student_login"
+            st.rerun()
+
+# --- 5.6 ISOLATED ADMIN LOGIN SCREEN ---
+def render_admin_login():
+    col1, col2, col3 = st.columns([1, 1.8, 1])
+    with col2:
+        st.markdown("<h2 style='text-align:center;'>🛡️ University Administration Portal</h2>", unsafe_allow_html=True)
+        st.caption("<div style='text-align:center;'>Confidential Proctor & Safety Dashboard</div>", unsafe_allow_html=True)
+        st.write("")
+
+        with st.form("admin_login_box"):
+            admin_user = st.text_input("Administrative Email", value=ADMIN_EMAIL)
+            admin_pwd = st.text_input("Admin Security Password", type="password", value="AdminUniHelp123!")
+            submit_adm = st.form_submit_button("Enter Administration Workspace", use_container_width=True, type="primary")
+
+        if submit_adm:
+            conn = get_conn()
+            row = conn.execute("SELECT * FROM users WHERE email=? AND role='admin'", (admin_user.strip().lower(),)).fetchone()
+            conn.close()
+            if row and check_password_hash(row["password_hash"], admin_pwd):
+                st.session_state["user"] = dict(row)
+                st.rerun()
+            else:
+                st.error("Access denied. Invalid administrative credentials.")
+
+        st.write("")
+        if st.button("← Return to Student Network", use_container_width=True):
+            st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
 # =============================================================================
-# 5. ADMIN CONSOLE (ISOLATED WORKSPACE)
+# 6. ADMIN WORKSPACE (COMPLETELY SEPARATE)
 # =============================================================================
 
-def render_admin_portal(user):
-    # Top Admin bar
-    top_c1, top_c2 = st.columns([3, 1])
-    with top_c1:
-        st.markdown(f"### 🛡️ Campus Administration Workspace")
+def render_admin_workspace(user):
+    top1, top2 = st.columns([3, 1])
+    with top1:
+        st.markdown("### 🛡️ Campus Administration Control Center")
         st.caption(f"Authenticated Officer: **{user['full_name']}** ({user['email']})")
-    with top_c2:
-        if st.button("🚪 Logout of Admin Portal", type="secondary", use_container_width=True):
+    with top2:
+        if st.button("🚪 Logout of Admin Console", use_container_width=True):
             st.session_state["user"] = None
-            st.session_state["auth_mode"] = "student"
+            st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
     st.divider()
@@ -744,10 +813,10 @@ def render_admin_portal(user):
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Verified Students", students_count)
     m2.metric("Open Disputes", open_disputes)
-    m3.metric("Escrow in Holding", f"₹{held_escrow:.0f}")
-    m4.metric("Active Campus Runs", active_deliveries)
+    m3.metric("Held Escrow Value", f"₹{held_escrow:.0f}")
+    m4.metric("Active Runs", active_deliveries)
 
-    adm_tab1, adm_tab2, adm_tab3 = st.tabs(["⚠️ Dispute Arbitration Queue", "👥 Student Registry", "💰 Financial Escrow Audit"])
+    adm_tab1, adm_tab2, adm_tab3 = st.tabs(["⚠️ Dispute Resolution", "👥 Student Registry", "💰 Escrow Oversight"])
 
     with adm_tab1:
         conn = get_conn()
@@ -758,28 +827,23 @@ def render_admin_portal(user):
         conn.close()
 
         if not disputes:
-            st.success("No disputes currently logged.")
+            st.success("No disputes currently open.")
         for d in disputes:
             with st.container(border=True):
                 st.markdown(f"**Dispute #{d['id']} — {d['category']}** on {d['transaction_type']} #{d['transaction_id']}")
-                st.caption(f"Reported by: **{d['reporter_name']}** | Status: `{d['status']}`")
-                st.write(d["description"] or "No detailed description.")
+                st.caption(f"Reporter: **{d['reporter_name']}** | Status: `{d['status']}`")
+                st.write(d["description"] or "No description provided.")
 
                 if d["status"] in ("OPEN", "UNDER_REVIEW"):
-                    b1, b2, b3 = st.columns(3)
-                    if b1.button("Mark Under Investigation", key=f"inv_{d['id']}"):
-                        conn = get_conn()
-                        conn.execute("UPDATE disputes SET status='UNDER_REVIEW' WHERE id=?", (d["id"],))
-                        conn.commit(); conn.close()
-                        st.rerun()
-                    if b2.button("Resolve & Release Escrow", key=f"res_{d['id']}"):
+                    b1, b2 = st.columns(2)
+                    if b1.button("Resolve & Release Escrow", key=f"res_{d['id']}"):
                         conn = get_conn()
                         conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE id=?", (now_iso(), d["id"]))
                         conn.commit(); conn.close()
                         update_transaction_status(d["transaction_type"], d["transaction_id"], "RELEASED")
                         st.success("Dispute resolved.")
                         st.rerun()
-                    if b3.button("Dismiss & Refund", key=f"rej_{d['id']}"):
+                    if b2.button("Dismiss & Refund Requester", key=f"rej_{d['id']}"):
                         conn = get_conn()
                         conn.execute("UPDATE disputes SET status='REJECTED', resolved_at=? WHERE id=?", (now_iso(), d["id"]))
                         conn.commit(); conn.close()
@@ -795,7 +859,7 @@ def render_admin_portal(user):
             c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
             c1.write(f"**{s['full_name']}** (`{s['student_id']}`)")
             c2.write(f"Trust: **{s['trust_score']}/100**")
-            c3.write(f"UniCoins: **{s['unicoins']}**")
+            c3.write(f"Coins: **{s['unicoins']}**")
             if s["is_suspended"]:
                 if c4.button("Unsuspend", key=f"unsusp_{s['id']}"):
                     conn = get_conn()
@@ -811,90 +875,76 @@ def render_admin_portal(user):
         conn = get_conn()
         txs = conn.execute("SELECT * FROM transactions ORDER BY id DESC LIMIT 50").fetchall()
         conn.close()
-        if not txs:
-            st.caption("No ledger transactions recorded yet.")
         for tx in txs:
-            st.markdown(f"TXN `#{tx['id']}` — Amount: **₹{tx['amount']:.0f}** | Context: **{tx['related_type']} #{tx['related_id']}** | Status: `{tx['status']}`")
+            st.write(f"TXN `#{tx['id']}` — ₹{tx['amount']:.0f} | Related: {tx['related_type']} #{tx['related_id']} | Status: `{tx['status']}`")
 
 # =============================================================================
-# 6. STUDENT WORKSPACE & MODULES
+# 7. STUDENT WORKSPACE
 # =============================================================================
 
-def render_student_portal(user):
-    # Student Header with profile status and quick user switcher for seamless testing
-    header_col1, header_col2 = st.columns([2.5, 1.5])
-    with header_col1:
+def render_student_workspace(user):
+    top1, top2 = st.columns([3, 1.5])
+    with top1:
         st.markdown(f"### 🎓 UNI HELP")
-        st.caption(f"Signed in as **{user['full_name']}** (`{user['student_id']}`) • Trust Score: **{user['trust_score']}/100** • 🪙 **{user['unicoins']} UniCoins**")
-    with header_col2:
-        switch_col, out_col = st.columns([2, 1])
-        with switch_col:
-            # Dropdown switcher solely between demo students
-            conn = get_conn()
-            other_students = conn.execute("SELECT id, full_name FROM users WHERE role='student'").fetchall()
-            conn.close()
-            opts = {s["id"]: s["full_name"] for s in other_students}
-            chosen = st.selectbox("Switch Student View", options=list(opts.keys()), format_func=lambda x: opts[x], index=list(opts.keys()).index(user["id"]) if user["id"] in opts else 0)
-            if chosen != user["id"]:
-                st.session_state["user"] = dict(user_by_id(chosen))
-                st.rerun()
-        with out_col:
-            if st.button("Logout", key="student_logout_btn"):
-                st.session_state["user"] = None
-                st.rerun()
+        st.caption(f"Student: **{user['full_name']}** (`{user['student_id']}`) • Trust Score: **{user['trust_score']}/100** • 🪙 **{user['unicoins']} UniCoins**")
+    with top2:
+        # Quick student switch helper (for presentation / hackathon demo)
+        conn = get_conn()
+        students = conn.execute("SELECT id, full_name FROM users WHERE role='student'").fetchall()
+        conn.close()
+        opts = {s["id"]: s["full_name"] for s in students}
+        chosen = st.selectbox("Demo Switch Student", options=list(opts.keys()), format_func=lambda x: opts[x], index=list(opts.keys()).index(user["id"]) if user["id"] in opts else 0)
+        if chosen != user["id"]:
+            st.session_state["user"] = dict(user_by_id(chosen))
+            st.rerun()
+
+        if st.button("Logout", key="student_exit"):
+            st.session_state["user"] = None
+            st.session_state["auth_mode"] = "student_login"
+            st.rerun()
 
     st.write("")
-    nav_tabs = st.tabs(["📦 Delivery Hub", "🤝 Borrowing Hub", "🛠 Micro-Tasks", "💰 Virtual Wallet & UniCoins", "⚠️ Disputes"])
+    tabs = st.tabs(["📦 Delivery Requests", "🤝 Borrowing Hub", "🛠 Micro-Tasks", "💰 UniCoins & Wallet", "⚠️ Report Dispute"])
 
-    # ---------------- 6.1 DELIVERY HUB ----------------
-    with nav_tabs[0]:
-        st.markdown("#### Campus Delivery Requests")
-        deliv_action = st.radio("Mode", ["Active Requests", "Create Delivery Request"], horizontal=True, label_visibility="collapsed")
+    # 1. Delivery
+    with tabs[0]:
+        st.markdown("#### Campus Delivery Network")
+        sub_mode = st.radio("Delivery Mode", ["Active Requests", "Post a Delivery Request"], horizontal=True, label_visibility="collapsed")
 
-        if deliv_action == "Create Delivery Request":
-            with st.form("new_delivery_form"):
-                item_name = st.text_input("Item Name", placeholder="e.g., Assignment Sheets / Parcel from Gate")
-                description = st.text_area("Details & Instructions", placeholder="Pick up from security desk and deliver to room 302")
-                p1, p2 = st.columns(2)
-                pickup_loc = p1.text_input("Pickup Point", value="Main Gate")
-                drop_loc = p2.text_input("Destination Point", value="Hostel Block C")
-                reward = st.number_input("Reward (₹ UniCoins/Simulated)", min_value=10.0, max_value=500.0, value=30.0, step=5.0)
-                sub = st.form_submit_button("Post Request to Campus", type="primary")
+        if sub_mode == "Post a Delivery Request":
+            with st.form("new_delivery"):
+                item_name = st.text_input("Item Name", placeholder="e.g. Courier at Main Gate")
+                desc = st.text_area("Pickup / Delivery Instructions")
+                c_p1, c_p2 = st.columns(2)
+                p_loc = c_p1.text_input("Pickup Point", value="Main Gate")
+                d_loc = c_p2.text_input("Drop Point", value="Hostel Block C")
+                reward = st.number_input("Reward (₹ / UniCoins)", min_value=10.0, value=30.0, step=5.0)
+                sub_del = st.form_submit_button("Post Request", type="primary")
 
-                if sub:
+                if sub_del:
                     conn = get_conn()
                     conn.execute(
                         """INSERT INTO requests (requester_id, item_name, description, pickup_location, destination, reward, status, created_at)
                            VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?)""",
-                        (user["id"], item_name.strip(), description.strip(), pickup_loc.strip(), drop_loc.strip(), reward, now_iso())
+                        (user["id"], item_name.strip(), desc.strip(), p_loc.strip(), d_loc.strip(), reward, now_iso()),
                     )
                     conn.commit(); conn.close()
-                    st.success("Delivery request posted!")
+                    st.success("Delivery request posted to campus!")
                     st.rerun()
         else:
             conn = get_conn()
-            requests = conn.execute(
-                """SELECT r.*, u.full_name requester_name FROM requests r
-                   JOIN users u ON u.id = r.requester_id
-                   WHERE r.status != 'CANCELLED' ORDER BY r.id DESC"""
-            ).fetchall()
+            requests = conn.execute("SELECT r.*, u.full_name requester_name FROM requests r JOIN users u ON u.id = r.requester_id ORDER BY r.id DESC").fetchall()
             conn.close()
 
-            if not requests:
-                st.info("No active delivery runs right now.")
             for r in requests:
                 with st.container(border=True):
                     is_owner = (r["requester_id"] == user["id"])
                     is_helper = (r["helper_id"] == user["id"])
-
-                    st.markdown(f"**{r['item_name']}** — ₹{r['reward']:.0f} Reward | Status: `<span class='status-pill pill-active'>{r['status']}</span>`", unsafe_allow_html=True)
+                    st.markdown(f"**{r['item_name']}** — Reward: **₹{r['reward']:.0f}** | Status: `{r['status']}`")
                     st.caption(f"📍 {r['pickup_location']} ➔ {r['destination']} | Requester: **{r['requester_name']}**")
-                    if r["description"]:
-                        st.write(r["description"])
 
-                    # Delivery Flow Steps
                     if r["status"] == "CREATED" and not is_owner:
-                        if st.button("Accept Delivery Run", key=f"acc_del_{r['id']}"):
+                        if st.button("Accept Delivery", key=f"acc_d_{r['id']}"):
                             conn = get_conn()
                             conn.execute("UPDATE requests SET helper_id=?, status='ACCEPTED', accepted_at=? WHERE id=?", (user["id"], now_iso(), r["id"]))
                             conn.commit(); conn.close()
@@ -904,153 +954,87 @@ def render_student_portal(user):
 
                     elif r["status"] == "ACCEPTED":
                         if is_owner:
-                            st.info("Helper has accepted. Show this OTP or QR code to the helper upon item handover.")
-                            c_otp, c_qr = st.columns(2)
-                            with c_otp:
-                                if st.button("Generate Handover OTP", key=f"gen_otp_{r['id']}"):
-                                    otp = create_otp(user["id"], "DELIVERY_PICKUP", r["id"])
-                                    st.success(f"One-Time Code: **{otp}**")
-                            with c_qr:
-                                if st.button("Generate Handover QR", key=f"gen_qr_{r['id']}"):
-                                    tok = create_qr_token("DELIVERY", r["id"], "DELIVERY_PICKUP")
-                                    st.image(generate_qr_bytes(tok), width=140)
-                                    st.caption(f"Token: `{tok}`")
+                            st.info("Helper is assigned. Provide this OTP during item handover:")
+                            if st.button("Generate Handover Code", key=f"gen_h_code_{r['id']}"):
+                                code = create_otp(user["id"], "HANDOVER_OTP", r["id"])
+                                st.success(f"Handover Code: **{code}**")
                         elif is_helper:
-                            st.markdown("##### 🔑 Confirm Pickup with Requester")
-                            method = st.radio("Verification Method", ["Enter OTP", "Enter QR Token"], horizontal=True, key=f"v_m_{r['id']}")
-                            code_in = st.text_input("Verification Code", key=f"code_in_{r['id']}")
-
-                            # Location simulation
-                            geo_check = st.checkbox("Simulate Geofence Check (<100m Radius)", value=True, key=f"geo_{r['id']}")
-
-                            if st.button("Verify Pickup", key=f"v_sub_{r['id']}"):
-                                if not geo_check:
-                                    st.error("Distance check failed: You must be within 100 meters of the pickup location.")
+                            st.markdown("##### Handover Verification")
+                            entered = st.text_input("Enter Handover Code from Requester", key=f"h_code_in_{r['id']}")
+                            if st.button("Confirm Handover", key=f"sub_h_code_{r['id']}"):
+                                ok, msg = verify_otp(r["requester_id"], "HANDOVER_OTP", r["id"], entered)
+                                if ok:
+                                    conn = get_conn()
+                                    conn.execute("UPDATE requests SET status='PICKUP_VERIFIED', pickup_verified_at=? WHERE id=?", (now_iso(), r["id"]))
+                                    conn.commit(); conn.close()
+                                    st.success("Handover confirmed! In Transit.")
+                                    st.rerun()
                                 else:
-                                    verified = False
-                                    if method == "Enter OTP":
-                                        ok, msg = verify_otp(r["requester_id"], "DELIVERY_PICKUP", r["id"], code_in)
-                                        verified = ok
-                                    else:
-                                        ok, msg = verify_qr_token(code_in, "DELIVERY", r["id"], "DELIVERY_PICKUP")
-                                        verified = ok
-
-                                    if verified:
-                                        conn = get_conn()
-                                        conn.execute("UPDATE requests SET status='PICKUP_VERIFIED', pickup_verified_at=? WHERE id=?", (now_iso(), r["id"]))
-                                        conn.commit(); conn.close()
-                                        st.success("Pickup verified! Delivery status updated to In-Transit.")
-                                        st.rerun()
-                                    else:
-                                        st.error(msg)
+                                    st.error(msg)
 
                     elif r["status"] == "PICKUP_VERIFIED" and is_helper:
-                        if st.button("Mark Item as Delivered", key=f"mark_deliv_{r['id']}"):
+                        if st.button("Mark as Delivered", key=f"mark_deliv_{r['id']}"):
                             conn = get_conn()
                             conn.execute("UPDATE requests SET status='DELIVERED', delivered_at=? WHERE id=?", (now_iso(), r["id"]))
                             conn.commit(); conn.close()
                             st.rerun()
 
                     elif r["status"] == "DELIVERED" and is_owner:
-                        st.info("Your helper marked this item delivered. Confirm to release the reward escrow.")
-                        if st.button("Confirm Handover & Release Escrow", key=f"conf_deliv_{r['id']}", type="primary"):
+                        if st.button("Confirm Receipt & Release Reward", key=f"conf_rec_{r['id']}", type="primary"):
                             conn = get_conn()
                             conn.execute("UPDATE requests SET status='COMPLETED', completed_at=? WHERE id=?", (now_iso(), r["id"]))
                             conn.commit(); conn.close()
                             update_transaction_status("DELIVERY", r["id"], "RELEASED")
                             add_unicoins(r["helper_id"], 20, f"Delivery completion reward for #{r['id']}")
-                            notify(r["helper_id"], f"Delivery #{r['id']} completed! Escrow released.")
-                            st.success("Completed! Escrow funds released.")
+                            st.success("Delivery completed and reward released!")
                             st.rerun()
 
-    # ---------------- 6.2 BORROWING HUB ----------------
-    with nav_tabs[1]:
-        st.markdown("#### Peer-to-Peer Borrowing Hub")
-        borrow_view = st.radio("Borrow Mode", ["Available Items", "List My Item"], horizontal=True, label_visibility="collapsed")
-
-        if borrow_view == "List My Item":
-            with st.form("new_item_form"):
-                it_name = st.text_input("Item Name", placeholder="e.g., Casio Scientific Calculator")
-                it_cat = st.selectbox("Category", ["Electronics", "Books", "Sports", "Lab Equipment", "Other"])
-                it_cond = st.selectbox("Condition", ["Like New", "Good", "Fair"])
-                it_dep = st.number_input("Security Deposit (₹)", min_value=0.0, value=50.0, step=10.0)
-                it_sub = st.form_submit_button("List for Borrowing", type="primary")
-
-                if it_sub:
-                    conn = get_conn()
-                    conn.execute(
-                        """INSERT INTO items (owner_id, item_name, category, condition, deposit, status, created_at)
-                           VALUES (?, ?, ?, ?, ?, 'AVAILABLE', ?)""",
-                        (user["id"], it_name.strip(), it_cat, it_cond, it_dep, now_iso())
-                    )
-                    conn.commit(); conn.close()
-                    st.success("Item listed!")
-                    st.rerun()
-        else:
-            conn = get_conn()
-            items = conn.execute(
-                """SELECT i.*, u.full_name owner_name FROM items i
-                   JOIN users u ON u.id = i.owner_id WHERE i.status='AVAILABLE'"""
-            ).fetchall()
-            conn.close()
-
-            if not items:
-                st.info("No items listed right now.")
-            for it in items:
-                with st.container(border=True):
-                    st.markdown(f"**{it['item_name']}** ({it['category']}) — Deposit: **₹{it['deposit']:.0f}**")
-                    st.caption(f"Owner: **{it['owner_name']}** | Condition: {it['condition']}")
-                    if it["owner_id"] != user["id"]:
-                        if st.button("Request to Borrow", key=f"req_it_{it['id']}"):
-                            conn = get_conn()
-                            conn.execute(
-                                """INSERT INTO borrowings (item_id, owner_id, borrower_id, deposit, status, created_at)
-                                   VALUES (?, ?, ?, ?, 'REQUESTED', ?)""",
-                                (it["id"], it["owner_id"], user["id"], it["deposit"], now_iso())
-                            )
-                            conn.execute("UPDATE items SET status='BORROWED' WHERE id=?", (it["id"],))
-                            conn.commit(); conn.close()
-                            create_transaction(user["id"], it["owner_id"], "BORROW_DEPOSIT", it["id"], it["deposit"], "HELD")
-                            st.success("Borrow request dispatched!")
-                            st.rerun()
-
-    # ---------------- 6.3 MICRO-TASKS ----------------
-    with nav_tabs[2]:
-        st.markdown("#### Campus Micro-Tasks & Quick Gigs")
+    # 2. Borrowing
+    with tabs[1]:
+        st.markdown("#### Campus Borrowing Hub")
         conn = get_conn()
-        tasks = conn.execute(
-            """SELECT t.*, u.full_name creator_name FROM tasks t
-               JOIN users u ON u.id = t.creator_id ORDER BY t.id DESC"""
-        ).fetchall()
+        items = conn.execute("SELECT i.*, u.full_name owner_name FROM items i JOIN users u ON u.id = i.owner_id WHERE i.status='AVAILABLE'").fetchall()
+        conn.close()
+
+        if not items:
+            st.info("No borrowable items available.")
+        for it in items:
+            with st.container(border=True):
+                st.markdown(f"**{it['item_name']}** ({it['category']}) — Deposit: **₹{it['deposit']:.0f}**")
+                st.caption(f"Owner: **{it['owner_name']}** | Condition: {it['condition']}")
+                if it["owner_id"] != user["id"]:
+                    if st.button("Request to Borrow", key=f"req_borrow_{it['id']}"):
+                        conn = get_conn()
+                        conn.execute("INSERT INTO borrowings (item_id, owner_id, borrower_id, deposit, status, created_at) VALUES (?,?,?,?,'REQUESTED',?)", (it["id"], it["owner_id"], user["id"], it["deposit"], now_iso()))
+                        conn.execute("UPDATE items SET status='BORROWED' WHERE id=?", (it["id"],))
+                        conn.commit(); conn.close()
+                        create_transaction(user["id"], it["owner_id"], "BORROW_DEPOSIT", it["id"], it["deposit"], "HELD")
+                        st.success("Request sent!")
+                        st.rerun()
+
+    # 3. Tasks
+    with tabs[2]:
+        st.markdown("#### Micro-Tasks & Campus Gigs")
+        conn = get_conn()
+        tasks = conn.execute("SELECT t.*, u.full_name creator_name FROM tasks t JOIN users u ON u.id = t.creator_id ORDER BY t.id DESC").fetchall()
         conn.close()
 
         for t in tasks:
             with st.container(border=True):
                 st.markdown(f"**{t['title']}** — ₹{t['reward']:.0f} | Status: `{t['status']}`")
-                st.caption(f"Category: {t['category']} | Posted by: **{t['creator_name']}** | Deadline: {t['deadline']}")
+                st.caption(f"Posted by: **{t['creator_name']}** | Deadline: {t['deadline']}")
                 st.write(t["description"])
-
                 if t["status"] == "CREATED" and t["creator_id"] != user["id"]:
-                    if st.button("Accept Task & Claim Escrow", key=f"acc_t_{t['id']}"):
+                    if st.button("Accept Task", key=f"acc_task_{t['id']}"):
                         conn = get_conn()
-                        conn.execute("UPDATE tasks SET helper_id=?, status='ACCEPTED', accepted_at=? WHERE id=?", (user["id"], now_iso(), t["id"]))
+                        conn.execute("UPDATE tasks SET helper_id=?, status='ACCEPTED' WHERE id=?", (user["id"], t["id"]))
                         conn.commit(); conn.close()
                         create_transaction(t["creator_id"], user["id"], "TASK", t["id"], t["reward"], "HELD")
                         st.rerun()
 
-                elif t["status"] == "ACCEPTED" and t["helper_id"] == user["id"]:
-                    if st.button("Complete Task", key=f"done_t_{t['id']}"):
-                        conn = get_conn()
-                        conn.execute("UPDATE tasks SET status='COMPLETED', completed_at=? WHERE id=?", (now_iso(), t["id"]))
-                        conn.commit(); conn.close()
-                        update_transaction_status("TASK", t["id"], "RELEASED")
-                        add_unicoins(user["id"], 15, f"Completed task #{t['id']}")
-                        st.success("Task completed and funds released from escrow!")
-                        st.rerun()
-
-    # ---------------- 6.4 VIRTUAL WALLET ----------------
-    with nav_tabs[3]:
-        st.markdown("#### Virtual Wallet & UniCoins Ledger")
+    # 4. Wallet
+    with tabs[3]:
+        st.markdown("#### Virtual Wallet & UniCoins")
         conn = get_conn()
         released = conn.execute("SELECT COALESCE(SUM(amount), 0) s FROM transactions WHERE payee_id=? AND status='RELEASED'", (user["id"],)).fetchone()["s"]
         held = conn.execute("SELECT COALESCE(SUM(amount), 0) s FROM transactions WHERE payee_id=? AND status='HELD'", (user["id"],)).fetchone()["s"]
@@ -1062,45 +1046,50 @@ def render_student_portal(user):
         w2.metric("Released Earnings", f"₹{released:.0f}")
         w3.metric("Held in Escrow", f"₹{held:.0f}")
 
-        st.caption("Transactions are simulated internally via UniCoins/Escrow prototype.")
-        st.markdown("##### Recent Transaction Ledger")
+        st.markdown("##### Recent Ledger")
         for tx in tx_logs:
             role = "Paid" if tx["payer_id"] == user["id"] else "Received"
-            st.write(f"• **{role} ₹{tx['amount']:.0f}** for `{tx['related_type']} #{tx['related_id']}` — Status: `{tx['status']}` ({tx['created_at'][:16]})")
+            st.write(f"• **{role} ₹{tx['amount']:.0f}** for `{tx['related_type']} #{tx['related_id']}` — Status: `{tx['status']}`")
 
-    # ---------------- 6.5 DISPUTES ----------------
-    with nav_tabs[4]:
-        st.markdown("#### Raise a Community Dispute")
-        with st.form("dispute_submission"):
-            tx_type = st.selectbox("Transaction Source", ["DELIVERY", "BORROWING", "TASK"])
-            ref_id = st.number_input("Transaction / Request ID", min_value=1, step=1)
-            cat = st.selectbox("Issue Category", ["Item Damaged", "No-show / Abandoned", "Incomplete Work", "Other"])
-            desc = st.text_area("Detailed Explanation")
-            sub_d = st.form_submit_button("Submit Dispute to Administration", type="primary")
+    # 5. Disputes
+    with tabs[4]:
+        st.markdown("#### Raise a Campus Dispute")
+        with st.form("raise_dispute_form"):
+            t_src = st.selectbox("Service Type", ["DELIVERY", "BORROWING", "TASK"])
+            r_id = st.number_input("Request / Task ID", min_value=1, step=1)
+            cat = st.selectbox("Category", ["Item Damaged", "No-Show / Abandoned", "Incomplete Task", "Other"])
+            exp = st.text_area("Explanation")
+            sub_disp = st.form_submit_button("Submit Dispute", type="primary")
 
-            if sub_d:
+            if sub_disp:
                 conn = get_conn()
                 conn.execute(
                     """INSERT INTO disputes (transaction_type, transaction_id, reporter_id, category, description, status, created_at)
                        VALUES (?, ?, ?, ?, ?, 'OPEN', ?)""",
-                    (tx_type, ref_id, user["id"], cat, desc.strip(), now_iso())
+                    (t_src, r_id, user["id"], cat, exp.strip(), now_iso()),
                 )
                 conn.commit(); conn.close()
-                update_transaction_status(tx_type, ref_id, "DISPUTED")
-                st.success("Dispute filed. Escrow has been frozen pending proctor arbitration.")
+                update_transaction_status(t_src, r_id, "DISPUTED")
+                st.success("Dispute filed. Escrow funds have been frozen for proctor arbitration.")
                 st.rerun()
 
 # =============================================================================
-# 7. MAIN CONTROLLER
+# 8. MAIN CONTROLLER & ROUTER
 # =============================================================================
 
 def main():
     user = st.session_state.get("user")
 
     if user is None:
-        auth_mode = st.session_state.get("auth_mode", "student")
+        auth_mode = st.session_state.get("auth_mode", "student_login")
         if auth_mode == "admin_login":
             render_admin_login()
+        elif auth_mode == "student_otp":
+            render_student_otp()
+        elif auth_mode == "forgot_password":
+            render_forgot_password()
+        elif auth_mode == "reset_password":
+            render_reset_password()
         elif auth_mode == "register":
             render_registration()
         else:
@@ -1109,9 +1098,9 @@ def main():
 
     # Route based on role
     if user.get("role") == "admin":
-        render_admin_portal(user)
+        render_admin_workspace(user)
     else:
-        render_student_portal(user)
+        render_student_workspace(user)
 
 if __name__ == "__main__":
     main()
