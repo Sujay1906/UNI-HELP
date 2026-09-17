@@ -752,11 +752,6 @@ h1, h2, h3, h4, h5, h6 {
     transform: translateY(-1px) scale(1.01) !important;
 }
 
-.stButton > button[kind="secondary"] {
-    background: rgba(32, 44, 51, 0.9) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-}
-
 .stTextInput > div > div > input,
 .stTextArea > div > div > textarea,
 .stSelectbox > div > div {
