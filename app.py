@@ -689,7 +689,7 @@ def delete_student_account(student_user_id):
     conn.close()
 
 # =============================================================================
-# 4. WHATSAPP-INSPIRED DARK MOBILE UI & HANDSHAKE LOADER
+# 4. CUSTOM HANDSHAKE LOADING ANIMATION & PREMIUM TYPOGRAPHY
 # =============================================================================
 
 st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", layout="centered")
@@ -709,7 +709,6 @@ h1, h2, h3, h4, h5, h6 {
     letter-spacing: -0.03em !important;
 }
 
-/* WhatsApp Dark Theme Inspiration */
 .stApp {
     background: radial-gradient(circle at 50% 0%, #111b21 0%, #0b141a 100%) !important;
     color: #e9edef !important;
@@ -723,7 +722,6 @@ h1, h2, h3, h4, h5, h6 {
     padding-right: 0.6rem !important;
 }
 
-/* Rounded WhatsApp-style Cards */
 [data-testid="stVerticalBlockBorderWrapper"], .stContainer {
     background: rgba(32, 44, 51, 0.75) !important;
     backdrop-filter: blur(16px) !important;
@@ -735,15 +733,6 @@ h1, h2, h3, h4, h5, h6 {
     margin-bottom: 0.8rem !important;
 }
 
-/* Floating Action Button Styling Simulation */
-.fab-container {
-    position: fixed;
-    bottom: 85px;
-    right: 25px;
-    z-index: 999;
-}
-
-/* Compact WhatsApp Buttons */
 .stButton > button {
     background: #00a884 !important;
     color: #ffffff !important;
@@ -768,7 +757,6 @@ h1, h2, h3, h4, h5, h6 {
     border: 1px solid rgba(255, 255, 255, 0.1) !important;
 }
 
-/* Inputs */
 .stTextInput > div > div > input,
 .stTextArea > div > div > textarea,
 .stSelectbox > div > div {
@@ -786,7 +774,6 @@ h1, h2, h3, h4, h5, h6 {
     box-shadow: 0 0 0 2px rgba(0, 168, 132, 0.25) !important;
 }
 
-/* Bottom Navigation / Tabs */
 .stTabs [data-baseweb="tab-list"] {
     background: #111b21 !important;
     border-radius: 16px !important;
@@ -1183,7 +1170,7 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. ADMIN WORKSPACE (PRESERVED 100%)
+# 6. EXPANDED ADMIN WORKSPACE (WITH ACCOUNT DELETION)
 # =============================================================================
 
 def render_admin_student_profile(admin_user, student_id):
@@ -1279,9 +1266,12 @@ def render_admin_student_profile(admin_user, student_id):
                 st.success(f"{coin_adjust:+d} UniCoins adjusted.")
                 st.rerun()
 
+    # --- IN-PERSON OFFICE SUMMON FEATURE ---
     st.write("")
     with st.container(border=True):
         st.markdown("##### 🏛️ Schedule In-Person Meeting / Office Summons")
+        st.caption("Request this student to meet an administrator or proctor for verification or complaint clarification.")
+        
         sum_loc = st.text_input("Office / Location", value="Proctor Office, Block 34 - Room 102")
         sum_time = st.text_input("Date & Time", value="Tomorrow at 3:00 PM")
         sum_reason = st.text_area("Reason for Meeting / Clarification", placeholder="e.g. Account verification or dispute clarification.")
@@ -1572,7 +1562,7 @@ def render_admin_workspace(user):
                                 conn.execute("UPDATE requests SET status='PICKUP_VERIFIED', pickup_verified_at=? WHERE id=?", (now_iso(), req["id"]))
                                 conn.commit(); conn.close()
                                 log_admin_action(user["id"], "ADMIN_BYPASS_PICKUP_OTP", req["id"], "Pickup approved without OTP")
-                                st.success("OTP-less handover approved!")
+                                st.success("OTP-less handover approved! Status updated to Pickup Verified.")
                                 st.rerun()
                     with b_c2:
                         if req["status"] not in ("COMPLETED", "CANCELLED"):
@@ -1841,7 +1831,7 @@ def render_admin_workspace(user):
                 st.success("Broadcast sent!")
 
 # =============================================================================
-# 7. STUDENT WORKSPACE (WHATSAPP-INSPIRED REDESIGN)
+# 7. STUDENT WORKSPACE
 # =============================================================================
 
 def render_student_workspace(user):
@@ -1857,7 +1847,6 @@ def render_student_workspace(user):
     h_col1, h_col2 = st.columns([3, 1])
     h_col1.markdown("### 🎓 UNI HELP")
 
-    # Time-based greeting calculation
     current_hour = datetime.now().hour
     if current_hour < 12:
         greeting = f"Good Morning, {user['full_name'].split()[0]}"
@@ -1873,13 +1862,12 @@ def render_student_workspace(user):
     conn.close()
 
     bell_label = f"🔔 ({unread_count})" if unread_count > 0 else "🔔"
-    if h_col2.button(bell_label, key="top_notif_btn", kind="secondary"):
+    if h_col2.button(bell_label, key="top_notif_btn"):
         st.session_state["student_active_tab"] = "Inbox"
         st.rerun()
 
     st.write("")
 
-    # --- APP NAVIGATION TABS (WhatsApp Bottom Nav Vibe) ---
     selected_tab = st.radio(
         "Navigation",
         ["Home", "Tasks", "Borrows", "Micro-Tasks", "Profile"],
@@ -1912,7 +1900,7 @@ def render_student_workspace(user):
         else:
             with st.container(border=True):
                 st.markdown("##### 📌 No Active Tasks")
-                st.caption("Need something? Create a request below using the + action button.")
+                st.caption("Need something? Create a request below using the + action menu.")
 
         st.write("")
         st.markdown("#### 📢 Campus Announcements")
@@ -2036,7 +2024,7 @@ def render_student_workspace(user):
                 st.caption(f"Reward: **₹{t['reward']:.0f}** | Status: `{t['status']}`")
                 st.write(t["description"])
 
-    # --- 5. PROFILE SECTION (With Settings, Help, Disputes, Logout) ---
+    # --- 5. PROFILE SECTION ---
     elif selected_tab == "Profile":
         st.markdown(f"#### 👤 {user['full_name']}")
         with st.container(border=True):
@@ -2047,7 +2035,7 @@ def render_student_workspace(user):
 
         st.write("")
         st.markdown("##### ⚠️ Support & Disputes")
-        st.caption("Need help or want to file a dispute? Email us directly at **unihelp.lpu@gmail.com** or raise a ticket below.")
+        st.caption("For any queries, please mail us at **unihelp.lpu@gmail.com** or submit a ticket below.")
 
         with st.form("profile_dispute_form"):
             tid = st.text_input("Task ID (e.g. UNIH0001)")
@@ -2066,13 +2054,13 @@ def render_student_workspace(user):
                     st.rerun()
 
         st.write("")
-        if st.button("🚪 Logout of Account", key="profile_logout_btn", type="secondary"):
+        if st.button("🚪 Logout of Account", key="profile_logout_btn"):
             show_handshake_loader("Logging Out...")
             st.session_state["user"] = None
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
-    # --- FLOATING ACTION BUTTON (FAB) SIMULATION FOR CREATING REQUESTS ---
+    # --- FLOATING ACTION BUTTON QUICK MENU ---
     st.write("")
     st.markdown("---")
     with st.expander("➕ Create New Request (Quick Action Menu)", expanded=False):
