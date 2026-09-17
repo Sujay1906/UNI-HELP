@@ -39,7 +39,6 @@ PASSWORD_RESET_EXPIRY_HOURS = 2
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@unihelp.local")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "AdminUniHelp123!")
 
-# SMTP Setup - Reads from Streamlit Secrets or Environment Variables
 def get_config_val(key, default=""):
     try:
         val = st.secrets.get(key, os.getenv(key, default))
@@ -236,17 +235,13 @@ def init_db():
     conn.close()
 
 # =============================================================================
-# 2. EMAIL & TOKEN SERVICES (ROBUST DISPATCH)
+# 2. EMAIL & TOKEN SERVICES
 # =============================================================================
 
 def send_realtime_email(to_email, subject, body):
-    """
-    Dispatches a real-time email. Returns (True, 'Success message')
-    or (False, 'Detailed error description').
-    """
     if not EMAIL_CONFIGURED:
         st.session_state["_last_email_simulated"] = (to_email, subject, body)
-        return False, "SMTP is not fully configured (Missing username/password in secrets.toml). Check simulated preview below."
+        return False, "SMTP is not fully configured (check secrets.toml). A simulated preview has been provided below."
 
     try:
         msg = MIMEText(body, "plain", "utf-8")
@@ -255,13 +250,11 @@ def send_realtime_email(to_email, subject, body):
         msg["To"] = to_email
 
         if SMTP_PORT == 465:
-            # SSL Connection
             context = ssl.create_default_context()
             with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=context, timeout=12) as server:
                 server.login(SMTP_USERNAME, SMTP_PASSWORD)
                 server.sendmail(SMTP_USERNAME, [to_email], msg.as_string())
         else:
-            # STARTTLS Connection (Typical for Port 587)
             context = ssl.create_default_context()
             with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=12) as server:
                 server.ehlo()
@@ -363,7 +356,7 @@ def verify_and_consume_password_reset_token(raw_token):
     if datetime.utcnow() > parse_iso(matched["expires_at"]):
         conn.close()
         return None, "This password reset link has expired."
-    
+
     user_id = matched["user_id"]
     conn.execute("UPDATE password_reset_tokens SET used = 1 WHERE id = ?", (matched["id"],))
     conn.commit()
@@ -377,7 +370,7 @@ def send_login_otp_email(user_row):
         f"Hello {user_row['full_name']},\n\n"
         f"Your login verification code for UNI HELP is: {otp}\n\n"
         f"This code will expire in {OTP_EXPIRY_MINUTES} minutes. If you did not request this, "
-        f"please secure your university account.\n\n"
+        f"please secure your account.\n\n"
         f"— UNI HELP Security"
     )
     return send_realtime_email(user_row["email"], subject, body)
@@ -390,7 +383,7 @@ def send_password_reset_email(user_row):
         f"Hello {user_row['full_name']},\n\n"
         f"We received a request to reset your password for your UNI HELP student account.\n\n"
         f"To choose a new password, click the link below:\n{reset_link}\n\n"
-        f"Or copy your reset token directly into the app:\n{raw_token}\n\n"
+        f"Or enter your reset token directly into the app:\n{raw_token}\n\n"
         f"This link is valid for {PASSWORD_RESET_EXPIRY_HOURS} hours.\n\n"
         f"— UNI HELP Security Team"
     )
@@ -398,7 +391,7 @@ def send_password_reset_email(user_row):
     return sent, msg, raw_token
 
 # =============================================================================
-# 3. RECORD & HELPER QUERIES
+# 3. QUERIES & INITIAL DATA
 # =============================================================================
 
 DEMO_STUDENTS = [
@@ -478,7 +471,7 @@ def update_transaction_status(related_type, related_id, status):
     conn.close()
 
 # =============================================================================
-# 4. INITIALIZATION & ROUTING HOOKS
+# 4. PAGE ROUTING & STATE
 # =============================================================================
 
 st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", layout="wide")
@@ -486,7 +479,6 @@ st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", 
 init_db()
 seed_demo_data()
 
-# Handle URL ?reset_token= parameter smoothly
 try:
     url_reset_token = st.query_params.get("reset_token")
     if url_reset_token:
@@ -500,7 +492,6 @@ if "user" not in st.session_state:
 if "auth_mode" not in st.session_state:
     st.session_state["auth_mode"] = "student_login"
 
-# Helper for simulated email dispatch (useful if SMTP credentials are missing)
 def show_simulated_dispatch_box():
     if "_last_email_simulated" in st.session_state:
         to_addr, subj, body = st.session_state["_last_email_simulated"]
@@ -512,7 +503,6 @@ def show_simulated_dispatch_box():
 # 5. AUTHENTICATION SCREENS
 # =============================================================================
 
-# --- 5.1 CLEAN STUDENT LOGIN (STEP 1: CREDENTIAL CHECK) ---
 def render_student_login():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -558,7 +548,6 @@ def render_student_login():
                 st.session_state["auth_mode"] = "register"
                 st.rerun()
 
-        # Discreet Gateway to University Admin Portal
         st.write("")
         st.markdown(
             "<div style='text-align:center;'><small style='color:#94a3b8;'>Authorized University Staff or Proctor? </small></div>",
@@ -568,7 +557,6 @@ def render_student_login():
             st.session_state["auth_mode"] = "admin_login"
             st.rerun()
 
-# --- 5.2 STUDENT LOGIN (STEP 2: EMAIL OTP VERIFICATION) ---
 def render_student_otp():
     user = st.session_state.get("pending_student_user")
     if not user:
@@ -609,7 +597,6 @@ def render_student_otp():
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
-# --- 5.3 FORGOT PASSWORD REQUEST ---
 def render_forgot_password():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -631,12 +618,10 @@ def render_forgot_password():
                     else:
                         st.warning(f"Could not send live email: {msg}. You can test the token directly below.")
                 else:
-                    # Generic response prevents ID enumeration
                     st.info("If that account is registered in UNI HELP, a reset link has been dispatched.")
 
         show_simulated_dispatch_box()
 
-        # Direct token navigation fallback
         st.write("")
         st.divider()
         st.markdown("##### Direct Password Reset")
@@ -657,7 +642,6 @@ def render_forgot_password():
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
-# --- 5.4 RESET PASSWORD SCREEN ---
 def render_reset_password():
     token = st.session_state.get("active_reset_token", "").strip()
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -702,7 +686,6 @@ def render_reset_password():
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
-# --- 5.5 REGISTRATION SCREEN ---
 def render_registration():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -748,7 +731,6 @@ def render_registration():
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
-# --- 5.6 ISOLATED ADMIN LOGIN SCREEN ---
 def render_admin_login():
     col1, col2, col3 = st.columns([1, 1.8, 1])
     with col2:
@@ -777,7 +759,7 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. ADMIN WORKSPACE (COMPLETELY SEPARATED)
+# 6. ADMIN WORKSPACE
 # =============================================================================
 
 def render_admin_workspace(user):
@@ -873,28 +855,30 @@ def render_admin_workspace(user):
 # =============================================================================
 
 def render_student_workspace(user):
-    top1, top2 = st.columns([3, 1.5])
+    top1, top2 = st.columns([4, 1])
     with top1:
         st.markdown(f"### 🎓 UNI HELP")
-        st.caption(f"Student: **{user['full_name']}** (`{user['student_id']}`) • Trust Score: **{user['trust_score']}/100** • 🪙 **{user['unicoins']} UniCoins**")
+        st.caption(
+            f"Student: **{user['full_name']}** (`{user['student_id']}`) • "
+            f"Trust Score: **{user['trust_score']}/100** • 🪙 **{user['unicoins']} UniCoins**"
+        )
     with top2:
-        # Quick student switch helper (for presentation / hackathon demo)
-        conn = get_conn()
-        students = conn.execute("SELECT id, full_name FROM users WHERE role='student'").fetchall()
-        conn.close()
-        opts = {s["id"]: s["full_name"] for s in students}
-        chosen = st.selectbox("Demo Switch Student", options=list(opts.keys()), format_func=lambda x: opts[x], index=list(opts.keys()).index(user["id"]) if user["id"] in opts else 0)
-        if chosen != user["id"]:
-            st.session_state["user"] = dict(user_by_id(chosen))
-            st.rerun()
-
-        if st.button("Logout", key="student_exit"):
+        st.write("")
+        if st.button("Logout", key="student_exit", use_container_width=True):
             st.session_state["user"] = None
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
     st.write("")
-    tabs = st.tabs(["📦 Delivery Requests", "🤝 Borrowing Hub", "🛠 Micro-Tasks", "💰 UniCoins & Wallet", "⚠️ Report Dispute"])
+
+    tabs = st.tabs([
+        "📦 Delivery Requests", 
+        "🤝 Borrowing Hub", 
+        "🛠 Micro-Tasks", 
+        "💰 UniCoins & Wallet", 
+        "👤 My Profile", 
+        "⚠️ Report Dispute"
+    ])
 
     # 1. Delivery Hub
     with tabs[0]:
@@ -923,9 +907,14 @@ def render_student_workspace(user):
                     st.rerun()
         else:
             conn = get_conn()
-            requests = conn.execute("SELECT r.*, u.full_name requester_name FROM requests r JOIN users u ON u.id = r.requester_id ORDER BY r.id DESC").fetchall()
+            requests = conn.execute(
+                """SELECT r.*, u.full_name requester_name FROM requests r 
+                   JOIN users u ON u.id = r.requester_id ORDER BY r.id DESC"""
+            ).fetchall()
             conn.close()
 
+            if not requests:
+                st.info("No active delivery runs right now.")
             for r in requests:
                 with st.container(border=True):
                     is_owner = (r["requester_id"] == user["id"])
@@ -1009,6 +998,8 @@ def render_student_workspace(user):
         tasks = conn.execute("SELECT t.*, u.full_name creator_name FROM tasks t JOIN users u ON u.id = t.creator_id ORDER BY t.id DESC").fetchall()
         conn.close()
 
+        if not tasks:
+            st.info("No micro-tasks currently open.")
         for t in tasks:
             with st.container(border=True):
                 st.markdown(f"**{t['title']}** — ₹{t['reward']:.0f} | Status: `{t['status']}`")
@@ -1037,12 +1028,63 @@ def render_student_workspace(user):
         w3.metric("Held in Escrow", f"₹{held:.0f}")
 
         st.markdown("##### Recent Ledger")
+        if not tx_logs:
+            st.caption("No transactions recorded yet.")
         for tx in tx_logs:
             role = "Paid" if tx["payer_id"] == user["id"] else "Received"
             st.write(f"• **{role} ₹{tx['amount']:.0f}** for `{tx['related_type']} #{tx['related_id']}` — Status: `{tx['status']}`")
 
-    # 5. Disputes
+    # 5. Dedicated Profile Section
     with tabs[4]:
+        st.markdown("#### 👤 Student Profile & Account Details")
+
+        fresh_user = user_by_id(user["id"])
+        if fresh_user:
+            user = dict(fresh_user)
+
+        conn = get_conn()
+        completed_deliveries = conn.execute(
+            "SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (user["id"],)
+        ).fetchone()["c"]
+        completed_tasks = conn.execute(
+            "SELECT COUNT(*) c FROM tasks WHERE helper_id=? AND status='COMPLETED'", (user["id"],)
+        ).fetchone()["c"]
+        active_borrows = conn.execute(
+            "SELECT COUNT(*) c FROM borrowings WHERE borrower_id=? AND status NOT IN ('COMPLETED', 'REJECTED')", (user["id"],)
+        ).fetchone()["c"]
+        conn.close()
+
+        prof_col1, prof_col2 = st.columns([1.2, 2])
+
+        with prof_col1:
+            with st.container(border=True):
+                st.markdown(f"### {user['full_name']}")
+                st.caption("Role: **Verified Student**")
+                st.markdown(f"**Student ID:** `{user['student_id']}`")
+                st.markdown(f"**Email:** `{user['email']}`")
+                st.markdown(f"**Phone:** `{user['phone'] or 'Not provided'}`")
+                st.markdown(f"**Account Status:** `{'Suspended' if user['is_suspended'] else 'Active'}`")
+                st.write("")
+                if st.button("🚪 Logout of Account", key="profile_logout", use_container_width=True):
+                    st.session_state["user"] = None
+                    st.session_state["auth_mode"] = "student_login"
+                    st.rerun()
+
+        with prof_col2:
+            st.markdown("##### 📊 Campus Reputation & Activity")
+            m_col1, m_col2 = st.columns(2)
+            m_col1.metric("Trust Score", f"{user['trust_score']}/100")
+            m_col2.metric("UniCoins Balance", f"🪙 {user['unicoins']}")
+
+            st.divider()
+            st.markdown("##### 📈 Activity Summary")
+            stat_c1, stat_c2, stat_c3 = st.columns(3)
+            stat_c1.metric("Deliveries Made", completed_deliveries)
+            stat_c2.metric("Tasks Completed", completed_tasks)
+            stat_c3.metric("Active Borrows", active_borrows)
+
+    # 6. Disputes
+    with tabs[5]:
         st.markdown("#### Raise a Campus Dispute")
         with st.form("raise_dispute_form"):
             t_src = st.selectbox("Service Type", ["DELIVERY", "BORROWING", "TASK"])
@@ -1086,7 +1128,6 @@ def main():
             render_student_login()
         return
 
-    # Role separation
     if user.get("role") == "admin":
         render_admin_workspace(user)
     else:
