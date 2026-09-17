@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS users (
     role TEXT NOT NULL DEFAULT 'student',
     verified INTEGER NOT NULL DEFAULT 0,
     is_suspended INTEGER NOT NULL DEFAULT 0,
+    lockout_at TEXT,
     trust_score INTEGER NOT NULL DEFAULT 50,
     rating_sum INTEGER NOT NULL DEFAULT 0,
     rating_count INTEGER NOT NULL DEFAULT 0,
@@ -337,7 +338,6 @@ def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
 
-    # Ensure lockout_at column exists on users table
     cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     if "lockout_at" not in cols:
         try:
@@ -518,7 +518,6 @@ def verify_otp(user_id, purpose, reference_id, submitted_otp):
         conn.commit()
         remaining = row["max_attempts"] - (row["attempts"] + 1)
         
-        # Check if max attempts reached -> Trigger OTP Lockout & Admin Approval Escalation
         if remaining <= 0:
             conn.execute("UPDATE users SET is_suspended = 2, lockout_at = ? WHERE id = ?", (now_iso(), user_id))
             conn.commit()
@@ -605,7 +604,7 @@ def send_password_reset_email(user_row):
     return sent, msg, raw_token
 
 # =============================================================================
-# 3. QUERIES & SEED DATA (DEMO STUDENTS REMOVED)
+# 3. QUERIES & SEED DATA
 # =============================================================================
 
 def seed_demo_data():
@@ -1015,7 +1014,6 @@ def render_student_login():
                     user = user_by_student_id_or_email(sid)
                     if user and check_password_hash(user["password_hash"], pwd):
                         if user["is_suspended"] == 2:
-                            # Check if 1 hour has elapsed since lockout
                             if user["lockout_at"]:
                                 lock_time = parse_iso(user["lockout_at"])
                                 if datetime.utcnow() > lock_time + timedelta(hours=1):
@@ -1086,7 +1084,6 @@ def render_student_otp():
             else:
                 st.error(msg)
                 if "locked" in msg.lower():
-                    # Transition to locked timer screen
                     fresh_u = user_by_id(user["id"])
                     st.session_state["locked_user"] = dict(fresh_u)
                     st.session_state.pop("pending_student_user", None)
@@ -1105,7 +1102,6 @@ def render_otp_locked():
         st.session_state["auth_mode"] = "student_login"
         st.rerun()
 
-    # Check live DB status to see if admin approved/unlocked
     fresh_u = user_by_id(user["id"])
     if fresh_u["is_suspended"] == 0:
         st.session_state["user"] = dict(fresh_u)
@@ -1115,7 +1111,6 @@ def render_otp_locked():
         time.sleep(1)
         st.rerun()
 
-    # Calculate 1 hour countdown timer from lockout_at
     lockout_time = parse_iso(fresh_u["lockout_at"]) if fresh_u["lockout_at"] else datetime.utcnow()
     expiry_time = lockout_time + timedelta(hours=1)
     remaining_seconds = (expiry_time - datetime.utcnow()).total_seconds()
@@ -1133,7 +1128,6 @@ def render_otp_locked():
                 st.progress(max(0.0, min(1.0, remaining_seconds / 3600.0)))
                 st.caption("If admin does not approve within 1 hour, your account lockout will automatically expire.")
             else:
-                # Auto unlock after 1 hour
                 conn = get_conn()
                 conn.execute("UPDATE users SET is_suspended = 0, lockout_at = NULL WHERE id = ?", (user["id"],))
                 conn.commit()
@@ -1302,7 +1296,7 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. EXPANDED ADMIN WORKSPACE (WITH ACCOUNT DELETION & OTP LOCKOUT REVIEW)
+# 6. EXPANDED ADMIN WORKSPACE (WITH ACCOUNT DELETION & DISPUTE-ONLY ALERT TRIAGE)
 # =============================================================================
 
 def render_admin_student_profile(admin_user, student_id):
@@ -1564,13 +1558,18 @@ def render_admin_workspace(user):
 
     with adm_tabs[0]:
         st.markdown("#### 🔔 System Alerts & Immediate Actions")
+        st.caption("Note: Approved registrations and unlocked accounts automatically disappear from this list. Only active/open dispute alerts remain until resolved.")
+        
         conn = get_conn()
-        notifs = conn.execute("SELECT * FROM admin_notifications ORDER BY id DESC LIMIT 50").fetchall()
+        # Fetch non-dispute alerts that are unread OR dispute alerts that are open
+        notifs = conn.execute(
+            "SELECT * FROM admin_notifications WHERE is_read = 0 OR category = 'DISPUTE' ORDER BY id DESC LIMIT 50"
+        ).fetchall()
         conn.close()
 
-        if st.button("Mark All Alerts as Read"):
+        if st.button("Mark All Alerts as Read (Except Disputes)"):
             conn = get_conn()
-            conn.execute("UPDATE admin_notifications SET is_read=1")
+            conn.execute("UPDATE admin_notifications SET is_read = 1 WHERE category != 'DISPUTE'")
             conn.commit()
             conn.close()
             st.rerun()
@@ -1634,18 +1633,19 @@ def render_admin_workspace(user):
                         if st.button(btn_txt, key=f"alert_appr_{n['id']}", use_container_width=True):
                             conn = get_conn()
                             conn.execute("UPDATE users SET verified=1, is_suspended=0, lockout_at=NULL WHERE student_id=?", (n["reference_id"],))
-                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
+                            # Delete alert so it disappears from queue upon approval
+                            conn.execute("DELETE FROM admin_notifications WHERE id=?", (n["id"],))
                             u_target = conn.execute("SELECT id FROM users WHERE student_id=?", (n["reference_id"],)).fetchone()
                             conn.commit()
                             conn.close()
                             if u_target:
                                 notify(u_target["id"], "Your account / login lock has been approved and unlocked by admin!")
-                            st.success(f"Approved student account {n['reference_id']}!")
+                            st.success(f"Approved and removed alert for student {n['reference_id']}!")
                             st.rerun()
                     with act_c2:
-                        if st.button("Dismiss Alert", key=f"alert_dism_u_{n['id']}", use_container_width=True):
+                        if st.button("Dismiss & Delete Alert", key=f"alert_dism_u_{n['id']}", use_container_width=True):
                             conn = get_conn()
-                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
+                            conn.execute("DELETE FROM admin_notifications WHERE id=?", (n["id"],))
                             conn.commit()
                             conn.close()
                             st.rerun()
@@ -1968,7 +1968,7 @@ def render_admin_workspace(user):
                 st.success("Broadcast sent!")
 
 # =============================================================================
-# 7. STUDENT WORKSPACE (FIXED BOTTOM NAVIGATION BAR)
+# 7. STUDENT WORKSPACE
 # =============================================================================
 
 def render_student_workspace(user):
