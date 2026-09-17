@@ -1103,7 +1103,7 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. EXPANDED ADMIN WORKSPACE WITH SEARCH, CONTROLS, & KILL-SWITCH
+# 6. EXPANDED ADMIN WORKSPACE WITH SUMMONS & ALERTS
 # =============================================================================
 
 def render_admin_student_profile(admin_user, student_id):
@@ -1189,6 +1189,26 @@ def render_admin_student_profile(admin_user, student_id):
                 log_admin_action(admin_user["id"], "ADJUST_UNICOINS", student["id"], f"{coin_adjust} coins: {reason}")
                 st.success(f"{coin_adjust:+d} UniCoins adjusted.")
                 st.rerun()
+
+    # --- IN-PERSON OFFICE SUMMON FEATURE ---
+    st.write("")
+    with st.container(border=True):
+        st.markdown("##### 🏛️ Schedule In-Person Meeting / Office Summons")
+        st.caption("Request this student to meet an administrator or proctor for verification or complaint clarification.")
+        
+        sum_loc = st.text_input("Office / Location", value="Proctor Office, Block 34 - Room 102")
+        sum_time = st.text_input("Date & Time", value="Tomorrow at 3:00 PM")
+        sum_reason = st.text_area("Reason for Meeting / Clarification", placeholder="e.g. Account verification or dispute clarification.")
+
+        if st.button("📢 Send Official Office Summons", type="primary"):
+            if not sum_loc.strip() or not sum_reason.strip():
+                st.error("Please provide an office location and reason.")
+            else:
+                msg = f"🏛️ OFFICIAL SUMMONS: Please report to {sum_loc.strip()} on {sum_time.strip()} to meet administration. Reason: {sum_reason.strip()}"
+                notify(student["id"], msg)
+                send_realtime_email(student["email"], "UNI HELP — Official Administration Summons", f"Hello {student['full_name']},\n\n{msg}\n\n— UNI HELP Proctor Office")
+                log_admin_action(admin_user["id"], "SEND_SUMMONS", student["id"], f"Summoned to {sum_loc}")
+                st.success(f"Official summons dispatched to {student['full_name']}!")
 
     st.write("")
     st.markdown("##### Complete Student Activity Audit History")
@@ -1353,7 +1373,6 @@ def render_admin_workspace(user):
                 st.write(n["message"])
                 st.caption(f"Logged at: {n['created_at'][:19].replace('T', ' ')}")
 
-                # Interactive Options inside Admin Alert
                 if n["category"] == "DISPUTE":
                     parsed_d_id = parse_task_id(n["reference_id"])
                     act_c1, act_c2, act_c3, act_c4 = st.columns(4)
@@ -1365,7 +1384,7 @@ def render_admin_workspace(user):
                             conn.close()
                             st.rerun()
                     with act_c2:
-                        if st.button("✅ Resolve & Release Escrow", key=f"alert_res_{n['id']}", use_container_width=True):
+                        if st.button("✅ Resolve & Release", key=f"alert_res_{n['id']}", use_container_width=True):
                             conn = get_conn()
                             conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE transaction_id=?", (now_iso(), parsed_d_id))
                             conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
@@ -1542,7 +1561,7 @@ def render_admin_workspace(user):
             if not found_any:
                 st.warning(f"No order found matching Task ID `{task_code(parsed_id)}`.")
 
-    # ---------------- TAB 2: DELIVERY ORDERS ----------------
+    # 2. Delivery Orders
     with adm_tabs[2]:
         st.markdown("#### Manage Delivery Orders")
         status_filter = st.selectbox("Filter Status", ["ALL", "CREATED", "ACCEPTED", "PICKUP_VERIFIED", "DELIVERED", "COMPLETED", "CANCELLED"], key="deliv_filter")
@@ -1603,7 +1622,7 @@ def render_admin_workspace(user):
                         st.warning(f"Task {code} deleted.")
                         st.rerun()
 
-    # ---------------- TAB 3: BORROWING REQUESTS ----------------
+    # 3. Borrowing Requests
     with adm_tabs[3]:
         st.markdown("#### Manage Borrow Requests")
         conn = get_conn()
@@ -1644,7 +1663,7 @@ def render_admin_workspace(user):
                         st.warning(f"Borrow request {code} deleted.")
                         st.rerun()
 
-    # ---------------- TAB 4: MICRO-TASK ORDERS ----------------
+    # 4. Micro-Task Orders
     with adm_tabs[4]:
         st.markdown("#### Manage Micro-Task Gigs")
         conn = get_conn()
@@ -1684,9 +1703,9 @@ def render_admin_workspace(user):
                         st.warning(f"Task {code} deleted.")
                         st.rerun()
 
-    # ---------------- TAB 5: STUDENT DIRECTORY & APPROVALS ----------------
+    # 5. Student Directory
     with adm_tabs[5]:
-        st.markdown("#### Student Directory & New Account Approvals")
+        st.markdown("#### Student Directory & Account Management")
         conn = get_conn()
         students = conn.execute("SELECT * FROM users WHERE role='student' ORDER BY verified ASC, id DESC").fetchall()
         conn.close()
@@ -1722,7 +1741,7 @@ def render_admin_workspace(user):
                         st.session_state["admin_selected_student_id"] = s["id"]
                         st.rerun()
 
-    # ---------------- TAB 6: DISPUTE QUEUE ----------------
+    # 6. Dispute Queue
     with adm_tabs[6]:
         st.markdown("#### Community Safety & Dispute Arbitration")
         conn = get_conn()
@@ -1759,7 +1778,7 @@ def render_admin_workspace(user):
                         st.info("Dispute dismissed.")
                         st.rerun()
 
-    # ---------------- TAB 7: ESCROW LEDGER ----------------
+    # 7. Escrow Ledger
     with adm_tabs[7]:
         st.markdown("#### Global Escrow & Financial Audit Ledger")
         conn = get_conn()
@@ -1780,7 +1799,7 @@ def render_admin_workspace(user):
             )
             st.divider()
 
-    # ---------------- TAB 8: BROADCAST NOTICE ----------------
+    # 8. Broadcast Notice
     with adm_tabs[8]:
         st.markdown("#### Campus-Wide Broadcast Center")
         st.caption("Send notifications directly to all student dashboards.")
@@ -1900,7 +1919,7 @@ def render_student_workspace(user):
                             st.info("Helper is assigned. Provide this OTP or display the QR code for handover:")
                             c_opt1, c_opt2 = st.columns(2)
                             with c_opt1:
-                                if st.button("🔐 Generate Handover OTP", key=f"gen_h_code_{r['id']}"):
+                                if st.button("🔐 Generate Handover Code", key=f"gen_h_code_{r['id']}"):
                                     code_otp = create_otp(user["id"], "HANDOVER_OTP", r["id"])
                                     st.success(f"Handover Code: **{code_otp}**")
                             with c_opt2:
@@ -2237,7 +2256,6 @@ def render_student_workspace(user):
     with tabs[5]:
         st.markdown("#### ⚠️ Campus Disputes & Reports")
 
-        # Two sub-views: View Existing Reports & File a New Dispute
         disp_mode = st.radio("Dispute View", ["My Filed Reports & Status", "File a New Dispute"], horizontal=True, label_visibility="collapsed")
 
         if disp_mode == "My Filed Reports & Status":
