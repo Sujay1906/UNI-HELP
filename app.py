@@ -15,6 +15,7 @@ import ssl
 import io
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
+import time
 
 import streamlit as st
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -693,7 +694,7 @@ def delete_order(order_type, order_id):
     conn.close()
 
 # =============================================================================
-# 4. PREMIUM TYPOGRAPHY & APP THEME (PLUS JAKARTA SANS)
+# 4. CUSTOM HANDSHAKE LOADING ANIMATION & PREMIUM TYPOGRAPHY
 # =============================================================================
 
 st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", layout="centered")
@@ -817,18 +818,105 @@ h1, h2, h3, h4, h5, h6 {
     box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4) !important;
 }
 
-/* Metric Display Values */
-[data-testid="stMetricValue"] {
-    font-size: 1.5rem !important;
-    font-weight: 800 !important;
-    background: linear-gradient(135deg, #60a5fa, #c084fc);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+/* --- TWO-PERSON HANDSHAKE LOADING ANIMATION --- */
+.handshake-loader-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2.5rem;
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(16px);
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    margin: 1.5rem 0;
+}
+
+.handshake-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    width: 140px;
+    height: 70px;
+}
+
+.person {
+    width: 22px;
+    height: 22px;
+    background: #60a5fa;
+    border-radius: 50%;
+    position: absolute;
+    box-shadow: 0 0 15px rgba(96, 165, 250, 0.6);
+}
+
+.person.left {
+    animation: walkLeft 1.6s infinite ease-in-out;
+}
+
+.person.right {
+    animation: walkRight 1.6s infinite ease-in-out;
+}
+
+.handshake-spark {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    background: #34d399;
+    border-radius: 50%;
+    opacity: 0;
+    box-shadow: 0 0 15px #34d399;
+    animation: sparkPulse 1.6s infinite ease-in-out;
+}
+
+@keyframes walkLeft {
+    0% { left: 0px; transform: translateY(0); }
+    40% { left: 45px; transform: translateY(-6px); }
+    50%, 75% { left: 52px; transform: translateY(0); } /* Handshake pause */
+    90% { left: 0px; transform: translateY(0); }
+    100% { left: 0px; transform: translateY(0); }
+}
+
+@keyframes walkRight {
+    0% { right: 0px; transform: translateY(0); }
+    40% { right: 45px; transform: translateY(-6px); }
+    50%, 75% { right: 52px; transform: translateY(0); } /* Handshake pause */
+    90% { right: 0px; transform: translateY(0); }
+    100% { right: 0px; transform: translateY(0); }
+}
+
+@keyframes sparkPulse {
+    0%, 45% { transform: scale(0); opacity: 0; }
+    55%, 70% { transform: scale(1.5); opacity: 1; }
+    80%, 100% { transform: scale(0); opacity: 0; }
+}
+
+.loading-text {
+    margin-top: 1rem;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #94a3b8;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
 }
 </style>
 """
 
 st.markdown(CUSTOM_GLOSSY_CSS, unsafe_allow_html=True)
+
+def show_handshake_loader(text="Connecting Campus Peers..."):
+    loader_html = f"""
+    <div class="handshake-loader-container">
+        <div class="handshake-wrapper">
+            <div class="person left"></div>
+            <div class="handshake-spark"></div>
+            <div class="person right"></div>
+        </div>
+        <div class="loading-text">{text}</div>
+    </div>
+    """
+    st.markdown(loader_html, unsafe_allow_html=True)
+    time.sleep(0.4) # Smooth transition feel
 
 init_db()
 seed_demo_data()
@@ -876,6 +964,7 @@ def render_student_login():
                 send_otp_btn = st.button("Send OTP →", use_container_width=True, type="primary")
             with c_btn2:
                 if st.button("Forgot?", use_container_width=True):
+                    show_handshake_loader("Loading Recovery...")
                     st.session_state["auth_mode"] = "forgot_password"
                     st.rerun()
 
@@ -885,6 +974,7 @@ def render_student_login():
                 elif not sid.strip().isdigit():
                     st.error("Student ID must contain numbers only.")
                 else:
+                    show_handshake_loader("Verifying Credentials...")
                     user = user_by_student_id_or_email(sid)
                     if user and check_password_hash(user["password_hash"], pwd):
                         if user["is_suspended"]:
@@ -903,11 +993,13 @@ def render_student_login():
 
             st.divider()
             if st.button("Register New Account", use_container_width=True):
+                show_handshake_loader("Opening Registration...")
                 st.session_state["auth_mode"] = "register"
                 st.rerun()
 
         st.write("")
         if st.button("🛡️ Admin Portal", use_container_width=True):
+            show_handshake_loader("Entering Secure Portal...")
             st.session_state["auth_mode"] = "admin_login"
             st.rerun()
 
@@ -927,6 +1019,7 @@ def render_student_otp():
         otp_val = st.text_input("6-Digit OTP", max_chars=6, key="login_otp_input")
 
         if st.button("Verify & Log In", use_container_width=True, type="primary"):
+            show_handshake_loader("Handshaking Secure Session...")
             ok, msg = verify_otp(user["id"], "STUDENT_LOGIN_OTP", None, otp_val)
             if ok:
                 st.session_state["user"] = user
@@ -939,6 +1032,7 @@ def render_student_otp():
                 st.error(msg)
 
         if st.button("← Back to Sign In", use_container_width=True):
+            show_handshake_loader("Returning...")
             st.session_state.pop("pending_student_user", None)
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
@@ -953,6 +1047,7 @@ def render_forgot_password():
             if not identifier.strip():
                 st.error("Please enter ID or email.")
             else:
+                show_handshake_loader("Dispatched Recovery Link...")
                 user = user_by_student_id_or_email(identifier)
                 if user:
                     sent, msg, raw_token = send_password_reset_email(user)
@@ -971,6 +1066,7 @@ def render_forgot_password():
 
         if st.button("Proceed to Reset →", use_container_width=True):
             if token_input.strip():
+                show_handshake_loader("Loading...")
                 st.session_state["active_reset_token"] = token_input.strip()
                 st.session_state["auth_mode"] = "reset_password"
                 st.rerun()
@@ -978,6 +1074,7 @@ def render_forgot_password():
                 st.error("Enter reset token.")
 
         if st.button("← Back", use_container_width=True):
+            show_handshake_loader("Returning...")
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
@@ -1002,6 +1099,7 @@ def render_reset_password():
             elif new_pw != confirm_pw:
                 st.error("Passwords do not match.")
             else:
+                show_handshake_loader("Updating Credentials...")
                 user_id, msg = verify_and_consume_password_reset_token(token)
                 if user_id:
                     conn = get_conn()
@@ -1038,6 +1136,7 @@ def render_registration():
             elif not sid.strip() or not name.strip():
                 st.error("All fields required.")
             else:
+                show_handshake_loader("Registering Peer Account...")
                 conn = get_conn()
                 try:
                     conn.execute(
@@ -1058,6 +1157,7 @@ def render_registration():
                     conn.close()
 
         if st.button("← Back", use_container_width=True):
+            show_handshake_loader("Returning...")
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
@@ -1071,6 +1171,7 @@ def render_admin_login():
             submit_adm = st.form_submit_button("Log In", use_container_width=True, type="primary")
 
         if submit_adm:
+            show_handshake_loader("Authenticating Proctor...")
             conn = get_conn()
             row = conn.execute("SELECT * FROM users WHERE email=? AND role='admin'", (admin_user.strip().lower(),)).fetchone()
             conn.close()
@@ -1081,11 +1182,12 @@ def render_admin_login():
                 st.error("Access denied.")
 
         if st.button("← Back", use_container_width=True):
+            show_handshake_loader("Returning...")
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
 # =============================================================================
-# 6. EXPANDED ADMIN WORKSPACE (ORIGINAL CONTROLS RESTORED)
+# 6. EXPANDED ADMIN WORKSPACE (ORIGINAL CONTROLS FULLY PRESERVED)
 # =============================================================================
 
 def render_admin_student_profile(admin_user, student_id):
@@ -1816,7 +1918,7 @@ def render_admin_workspace(user):
                 st.success(f"Announcement broadcasted to {len(students)} active students!")
 
 # =============================================================================
-# 7. STUDENT WORKSPACE (PREMIUM APP UI)
+# 7. STUDENT WORKSPACE
 # =============================================================================
 
 def render_student_workspace(user):
@@ -1831,6 +1933,7 @@ def render_student_workspace(user):
     c1, c2 = st.columns([3, 1])
     c1.markdown(f"### 🎓 UNI HELP")
     if c2.button("Logout"):
+        show_handshake_loader("Logging Out...")
         st.session_state["user"] = None
         st.session_state["auth_mode"] = "student_login"
         st.rerun()
@@ -1864,6 +1967,7 @@ def render_student_workspace(user):
                 d = st.text_input("Destination", value="Hostel")
                 rew = st.number_input("Reward (₹)", value=30.0)
                 if st.form_submit_button("Post Request", type="primary"):
+                    show_handshake_loader("Publishing Request...")
                     conn = get_conn()
                     conn.execute("INSERT INTO requests (requester_id, item_name, description, pickup_location, destination, reward, status, created_at) VALUES (?,?,?,?,?,?,'CREATED',?)",
                                  (user["id"], iname, desc, p, d, rew, now_iso()))
@@ -1879,6 +1983,7 @@ def render_student_workspace(user):
                     st.caption(f"📍 {r['pickup_location']} ➔ {r['destination']} | {estimate_campus_distance(r['pickup_location'])}")
                     if r["status"] == "CREATED" and r["requester_id"] != user["id"]:
                         if st.button("Accept", key=f"ac_d_{r['id']}"):
+                            show_handshake_loader("Accepting Delivery...")
                             conn2 = get_conn()
                             conn2.execute("UPDATE requests SET helper_id=?, status='ACCEPTED' WHERE id=?", (user["id"], r["id"]))
                             conn2.commit(); conn2.close()
@@ -1898,6 +2003,7 @@ def render_student_workspace(user):
                 rew = st.number_input("Reward (₹)", value=20.0)
                 dep = st.number_input("Deposit (₹)", value=100.0)
                 if st.form_submit_button("Post Borrow Request", type="primary"):
+                    show_handshake_loader("Posting Request...")
                     conn = get_conn()
                     conn.execute("INSERT INTO borrow_requests (borrower_id, item_name, category, location, description, duration, deposit, reward, status, created_at) VALUES (?,?,'General',?,'',?,?,?,'REQUESTED',?)",
                                  (user["id"], iname, loc, dur, dep, rew, now_iso()))
@@ -1913,6 +2019,7 @@ def render_student_workspace(user):
                     st.caption(f"📍 {b['location']} | {estimate_campus_distance(b['location'])}")
                     if b["status"] == "REQUESTED" and b["borrower_id"] != user["id"]:
                         if st.button("Lend This", key=f"lend_{b['id']}"):
+                            show_handshake_loader("Accepting Borrow Request...")
                             conn2 = get_conn()
                             conn2.execute("UPDATE borrow_requests SET lender_id=?, status='ACCEPTED' WHERE id=?", (user["id"], b["id"]))
                             conn2.commit(); conn2.close()
@@ -1946,6 +2053,7 @@ def render_student_workspace(user):
             if st.form_submit_button("Submit Dispute", type="primary"):
                 pid = parse_task_id(tid)
                 if pid:
+                    show_handshake_loader("Filing Dispute...")
                     conn = get_conn()
                     conn.execute("INSERT INTO disputes (transaction_type, transaction_id, reporter_id, category, description, status, created_at) VALUES ('DELIVERY', ?, ?, ?, ?, 'OPEN', ?)",
                                  (pid, user["id"], cat, exp, now_iso()))
