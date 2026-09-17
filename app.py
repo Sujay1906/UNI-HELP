@@ -33,7 +33,6 @@ UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
 QR_DIR = os.path.join(UPLOADS_DIR, "qr")
 PHOTOS_DIR = os.path.join(UPLOADS_DIR, "photos")
 
-UNIVERSITY_EMAIL_DOMAIN = os.getenv("UNIVERSITY_EMAIL_DOMAIN", "@student.university.edu")
 OTP_EXPIRY_MINUTES = 5
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
 QR_EXPIRY_MINUTES = 30
@@ -595,7 +594,7 @@ DEMO_STUDENTS = [
 def seed_demo_data():
     conn = get_conn()
     for full_name, local, phone, sid in DEMO_STUDENTS:
-        email = f"{local}{UNIVERSITY_EMAIL_DOMAIN}"
+        email = f"{local}@gmail.com"
         existing = conn.execute("SELECT id FROM users WHERE email = ? OR student_id = ?", (email, sid)).fetchone()
         if not existing:
             conn.execute(
@@ -837,7 +836,7 @@ def show_simulated_dispatch_box():
             st.code(body, language="text")
 
 # =============================================================================
-# 5. AUTHENTICATION SCREENS (NO EXAMPLES / PURE NUMERIC STUDENT ID)
+# 5. AUTHENTICATION SCREENS (UNIVERSAL EMAIL SUPPORT + PURE NUMERIC ID)
 # =============================================================================
 
 def render_student_login():
@@ -942,9 +941,9 @@ def render_forgot_password():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("### 🔑 Recover Account Password")
-        st.caption("Enter your numeric Student ID or registered university email. UNI HELP will send a secure password reset link to your email address.")
+        st.caption("Enter your numeric Student ID or registered email address. UNI HELP will send a secure password reset link.")
 
-        identifier = st.text_input("Student ID (Numbers Only) or University Email")
+        identifier = st.text_input("Student ID (Numbers Only) or Email Address")
 
         if st.button("Send Reset Link to Email", use_container_width=True, type="primary"):
             if not identifier.strip():
@@ -1036,7 +1035,7 @@ def render_registration():
         with st.form("reg_form"):
             name = st.text_input("Full Name")
             sid = st.text_input("Student ID (Numbers Only)")
-            email = st.text_input("University Email")
+            email = st.text_input("Email Address")
             phone = st.text_input("Phone Number")
             pw1 = st.text_input("Password", type="password")
             pw2 = st.text_input("Confirm Password", type="password")
@@ -1045,8 +1044,8 @@ def render_registration():
         if submitted:
             if not sid.strip().isdigit():
                 st.error("Student ID must contain numbers only (no alphabets).")
-            elif not email.endswith(UNIVERSITY_EMAIL_DOMAIN):
-                st.error(f"Email domain must match: {UNIVERSITY_EMAIL_DOMAIN}")
+            elif "@" not in email or "." not in email:
+                st.error("Please enter a valid email address.")
             elif len(pw1) < 6 or pw1 != pw2:
                 st.error("Passwords must match and be at least 6 characters.")
             elif not sid.strip() or not name.strip():
@@ -1065,7 +1064,7 @@ def render_registration():
                     notify_admin(
                         "NEW_ACCOUNT",
                         sid.strip(),
-                        f"Student {name.strip()} ({sid.strip()}) registered and is awaiting verification approval."
+                        f"Student {name.strip()} ({sid.strip()}) registered with email {email.strip()} and is awaiting verification approval."
                     )
                     st.success("Account submitted successfully! Awaiting Admin Approval.")
                     st.session_state["auth_mode"] = "student_login"
@@ -1347,6 +1346,7 @@ def render_admin_workspace(user):
     m4.metric("Admin Alerts", unread_admin_notifs)
     m5.metric("Active Deliveries", active_deliveries)
 
+    # 🔔 ADMIN ALERTS TAB IS PLACED FIRST FOR MAXIMUM UTILITY
     adm_tabs = st.tabs([
         "🔔 Admin Alerts",
         "🔍 Search & Lookup Order",
@@ -1909,11 +1909,11 @@ def render_student_workspace(user):
 
         if sub_mode == "Post a Delivery Request":
             with st.form("new_delivery"):
-                item_name = st.text_input("Item Name", placeholder="e.g. Courier at Main Gate")
+                item_name = st.text_input("Item Name")
                 desc = st.text_area("Pickup / Delivery Instructions")
                 c_p1, c_p2 = st.columns(2)
-                p_loc = c_p1.text_input("Pickup Point", value="Main Gate")
-                d_loc = c_p2.text_input("Drop Point", value="Hostel Block C")
+                p_loc = c_p1.text_input("Pickup Point")
+                d_loc = c_p2.text_input("Drop Point")
                 reward = st.number_input("Reward (₹ / UniCoins)", min_value=10.0, value=30.0, step=5.0)
                 sub_del = st.form_submit_button("Post Request", type="primary")
 
@@ -2412,4 +2412,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
