@@ -12,11 +12,13 @@ import secrets
 import string
 import smtplib
 import ssl
+import io
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta
 
 import streamlit as st
 from werkzeug.security import generate_password_hash, check_password_hash
+import qrcode
 from dotenv import load_dotenv
 
 # =============================================================================
@@ -34,12 +36,12 @@ PHOTOS_DIR = os.path.join(UPLOADS_DIR, "photos")
 UNIVERSITY_EMAIL_DOMAIN = os.getenv("UNIVERSITY_EMAIL_DOMAIN", "@student.university.edu")
 OTP_EXPIRY_MINUTES = 5
 OTP_MAX_ATTEMPTS = int(os.getenv("OTP_MAX_ATTEMPTS", "5"))
+QR_EXPIRY_MINUTES = 30
 PASSWORD_RESET_EXPIRY_HOURS = 2
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@unihelp.local")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "AdminUniHelp123!")
 
-# Official LPU Block-to-Room Directory
 CAMPUS_LOCATION_MAP = {
     "Block 1A": ["Room 101", "Room 203"],
     "Block 4": ["Room 108", "Room 208"],
@@ -125,14 +127,16 @@ def task_code(entity_id):
     return f"UNIH{int(entity_id):04d}"
 
 def parse_task_id(query_str):
-    clean = query_str.strip().upper()
+    if not query_str:
+        return None
+    clean = str(query_str).strip().upper()
     if clean.startswith("UNIH"):
         digits = clean.replace("UNIH", "")
         return int(digits) if digits.isdigit() else None
     return int(clean) if clean.isdigit() else None
 
 # =============================================================================
-# 1. DATABASE & INITIALIZATION
+# 1. DATABASE SETUP
 # =============================================================================
 
 def get_conn():
@@ -184,6 +188,17 @@ CREATE TABLE IF NOT EXISTS otp_records (
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 5,
     used INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS qr_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reference_type TEXT NOT NULL,
+    reference_id INTEGER NOT NULL,
+    purpose TEXT NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 
@@ -258,6 +273,15 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS admin_notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL,
+    reference_id TEXT,
+    message TEXT NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS disputes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     transaction_type TEXT NOT NULL,
@@ -298,7 +322,6 @@ def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
 
-    # Seamless column migration if location was not in older borrow_requests table
     cols = {row[1] for row in conn.execute("PRAGMA table_info(borrow_requests)").fetchall()}
     if "location" not in cols:
         try:
@@ -344,8 +367,57 @@ def set_platform_paused(paused: bool):
     conn.close()
 
 # =============================================================================
-# 2. EMAIL & SECURITY SERVICES
+# 2. QR CODES & SECURITY
 # =============================================================================
+
+def create_qr_token(reference_type, reference_id, purpose):
+    conn = get_conn()
+    conn.execute(
+        """UPDATE qr_tokens SET used = 1
+           WHERE reference_type = ? AND reference_id = ? AND purpose = ? AND used = 0""",
+        (reference_type, reference_id, purpose),
+    )
+    token = f"UNIH|{reference_type}|{reference_id}|{secrets.token_urlsafe(8)}"
+    expires_at = (datetime.utcnow() + timedelta(minutes=QR_EXPIRY_MINUTES)).isoformat()
+    conn.execute(
+        """INSERT INTO qr_tokens (reference_type, reference_id, purpose, token, used, expires_at, created_at)
+           VALUES (?, ?, ?, ?, 0, ?, ?)""",
+        (reference_type, reference_id, purpose, token, expires_at, now_iso()),
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+def verify_qr_token(submitted_token, reference_type, reference_id, purpose):
+    clean_token = submitted_token.strip()
+    conn = get_conn()
+    row = conn.execute(
+        """SELECT * FROM qr_tokens 
+           WHERE token = ? AND reference_type = ? AND reference_id = ? AND purpose = ?""",
+        (clean_token, reference_type, reference_id, purpose),
+    ).fetchone()
+
+    if row is None:
+        conn.close()
+        return False, "Invalid QR code for this transaction."
+    if row["used"]:
+        conn.close()
+        return False, "This QR code has already been scanned/used."
+    if datetime.utcnow() > parse_iso(row["expires_at"]):
+        conn.close()
+        return False, "This QR code has expired. Request a new one."
+
+    conn.execute("UPDATE qr_tokens SET used = 1 WHERE id = ?", (row["id"],))
+    conn.commit()
+    conn.close()
+    return True, "QR verified successfully."
+
+def generate_qr_bytes(token):
+    img = qrcode.make(token)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 def send_realtime_email(to_email, subject, body):
     if not EMAIL_CONFIGURED:
@@ -412,15 +484,12 @@ def verify_otp(user_id, purpose, reference_id, submitted_otp):
     if row is None:
         conn.close()
         return False, "No active OTP found. Please request a new one."
-
     if row["attempts"] >= row["max_attempts"]:
         conn.close()
         return False, "Too many incorrect attempts. Request a new OTP."
-
     if datetime.utcnow() > parse_iso(row["expires_at"]):
         conn.close()
         return False, "OTP has expired. Request a new one."
-
     if not check_password_hash(row["otp_hash"], submitted_otp.strip()):
         conn.execute("UPDATE otp_records SET attempts = attempts + 1 WHERE id = ?", (row["id"],))
         conn.commit()
@@ -490,8 +559,7 @@ def send_password_reset_email(user_row):
     subject = "UNI HELP — Password Reset Request"
     body = (
         f"Hello {user_row['full_name']},\n\n"
-        f"We received a request to reset your password for your UNI HELP student account.\n\n"
-        f"To choose a new password, click the link below:\n{reset_link}\n\n"
+        f"Click the link below to set a new password:\n{reset_link}\n\n"
         f"Or enter your reset token directly into the app:\n{raw_token}\n\n"
         f"This link is valid for {PASSWORD_RESET_EXPIRY_HOURS} hours.\n\n"
         f"— UNI HELP Security Team"
@@ -549,6 +617,15 @@ def notify(user_id, message):
     conn.commit()
     conn.close()
 
+def notify_admin(category, reference_id, message):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO admin_notifications (category, reference_id, message, is_read, created_at) VALUES (?, ?, ?, 0, ?)",
+        (category, str(reference_id), message, now_iso())
+    )
+    conn.commit()
+    conn.close()
+
 def log_admin_action(admin_id, action, target_id, details=""):
     conn = get_conn()
     conn.execute(
@@ -602,10 +679,122 @@ def delete_order(order_type, order_id):
     conn.close()
 
 # =============================================================================
-# 4. PAGE ROUTING & STATE
+# 4. GLOSSY THEME & STYLES
 # =============================================================================
 
 st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", layout="wide")
+
+CUSTOM_GLOSSY_CSS = """
+<style>
+/* Modern Deep Cyber-Glass Dark Palette */
+.stApp {
+    background: radial-gradient(circle at 10% 20%, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 1) 90%) !important;
+    color: #f8fafc !important;
+    font-family: 'Inter', -apple-system, sans-serif;
+}
+
+/* Glassmorphism Cards */
+[data-testid="stVerticalBlockBorderWrapper"], .stContainer {
+    background: rgba(30, 41, 59, 0.45) !important;
+    backdrop-filter: blur(16px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    border-radius: 18px !important;
+    box-shadow: 0 10px 30px 0 rgba(0, 0, 0, 0.37) !important;
+    transition: all 0.3s ease-in-out;
+}
+
+[data-testid="stVerticalBlockBorderWrapper"]:hover {
+    border: 1px solid rgba(96, 165, 250, 0.3) !important;
+    box-shadow: 0 12px 40px 0 rgba(37, 99, 235, 0.2) !important;
+}
+
+/* Glossy Neon Animated Buttons */
+.stButton > button {
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.7), rgba(99, 102, 241, 0.8)) !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    border-radius: 12px !important;
+    padding: 0.55rem 1.25rem !important;
+    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.4), 0 4px 15px rgba(37, 99, 235, 0.35) !important;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    backdrop-filter: blur(8px) !important;
+}
+
+.stButton > button:hover {
+    transform: translateY(-2px) scale(1.01) !important;
+    box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.6), 0 8px 25px rgba(99, 102, 241, 0.55) !important;
+    border-color: rgba(255, 255, 255, 0.5) !important;
+}
+
+.stButton > button:active {
+    transform: translateY(1px) scale(0.99) !important;
+}
+
+/* Secondary Button Customization */
+.stButton > button[kind="secondary"] {
+    background: rgba(30, 41, 59, 0.7) !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* Form Inputs Glowing Glass Finish */
+.stTextInput > div > div > input,
+.stTextArea > div > div > textarea,
+.stSelectbox > div > div {
+    background: rgba(15, 23, 42, 0.6) !important;
+    color: #f1f5f9 !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
+    border-radius: 12px !important;
+    backdrop-filter: blur(8px) !important;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.3) !important;
+    transition: all 0.2s ease-in-out !important;
+}
+
+.stTextInput > div > div > input:focus,
+.stTextArea > div > div > textarea:focus {
+    border-color: #60a5fa !important;
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.25), inset 0 2px 4px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* Tabs Glossy Navigation */
+.stTabs [data-baseweb="tab-list"] {
+    background: rgba(15, 23, 42, 0.75) !important;
+    border-radius: 14px !important;
+    padding: 6px !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    backdrop-filter: blur(12px) !important;
+    gap: 8px !important;
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 10px !important;
+    padding: 8px 16px !important;
+    font-weight: 700 !important;
+    color: #94a3b8 !important;
+    transition: all 0.2s ease !important;
+    border: none !important;
+}
+
+.stTabs [aria-selected="true"] {
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.8), rgba(99, 102, 241, 0.9)) !important;
+    color: #ffffff !important;
+    box-shadow: 0 4px 15px rgba(37, 99, 235, 0.35) !important;
+}
+
+/* Metric Cards */
+[data-testid="stMetricValue"] {
+    font-size: 1.8rem !important;
+    font-weight: 800 !important;
+    background: linear-gradient(135deg, #60a5fa, #c084fc);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+</style>
+"""
+
+st.markdown(CUSTOM_GLOSSY_CSS, unsafe_allow_html=True)
 
 init_db()
 seed_demo_data()
@@ -640,12 +829,12 @@ def render_student_login():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("<h1 style='text-align:center;'>🎓 UNI HELP</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align:center; color:#64748b;'>Verified Student-to-Student Campus Assistance Network</p>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align:center; color:#94a3b8;'>Verified Student-to-Student Campus Assistance Network</p>", unsafe_allow_html=True)
         st.write("")
 
         with st.container(border=True):
             st.markdown("##### 🔐 Student Sign In")
-            st.caption("Step 1 of 2: Enter your credentials to receive an email OTP")
+            st.caption("Step 1 of 2: Enter credentials to receive an email OTP")
 
             sid = st.text_input("Student ID", placeholder="Enter your Student ID (e.g., STU1001)", key="login_sid")
             pwd = st.text_input("Password", type="password", placeholder="••••••••", key="login_pwd")
@@ -666,6 +855,8 @@ def render_student_login():
                     if user and check_password_hash(user["password_hash"], pwd):
                         if user["is_suspended"]:
                             st.error("This student account is currently suspended. Please contact the campus proctor.")
+                        elif not user["verified"]:
+                            st.warning("Your account is pending admin approval. You will be able to sign in once verified.")
                         else:
                             st.session_state["pending_student_user"] = dict(user)
                             sent, err_desc = send_login_otp_email(user)
@@ -683,7 +874,7 @@ def render_student_login():
 
         st.write("")
         st.markdown(
-            "<div style='text-align:center;'><small style='color:#94a3b8;'>Authorized University Staff or Proctor? </small></div>",
+            "<div style='text-align:center;'><small style='color:#64748b;'>Authorized University Staff or Proctor? </small></div>",
             unsafe_allow_html=True,
         )
         if st.button("Access University Admin Portal", use_container_width=True):
@@ -832,7 +1023,7 @@ def render_registration():
             phone = st.text_input("Phone Number", placeholder="9876543210")
             pw1 = st.text_input("Password", type="password")
             pw2 = st.text_input("Confirm Password", type="password")
-            submitted = st.form_submit_button("Register & Activate Account", use_container_width=True, type="primary")
+            submitted = st.form_submit_button("Register & Submit for Approval", use_container_width=True, type="primary")
 
         if submitted:
             if not email.endswith(UNIVERSITY_EMAIL_DOMAIN):
@@ -846,13 +1037,18 @@ def render_registration():
                 try:
                     conn.execute(
                         """INSERT INTO users (full_name, email, phone, student_id, password_hash, role, verified, trust_score, unicoins, created_at)
-                           VALUES (?, ?, ?, ?, ?, 'student', 1, 50, 50, ?)""",
+                           VALUES (?, ?, ?, ?, ?, 'student', 0, 50, 50, ?)""",
                         (name.strip(), email.strip().lower(), phone.strip(), sid.strip(), generate_password_hash(pw1), now_iso()),
                     )
                     uid = conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]
                     conn.commit()
                     add_unicoins(uid, 50, "Welcome bonus")
-                    st.success("Account created successfully with 50 UniCoins! Please sign in.")
+                    notify_admin(
+                        "NEW_ACCOUNT",
+                        sid.strip(),
+                        f"Student {name.strip()} ({sid.strip()}) registered and is awaiting verification approval."
+                    )
+                    st.success("Account submitted successfully! Awaiting Admin Approval.")
                     st.session_state["auth_mode"] = "student_login"
                     st.rerun()
                 except sqlite3.IntegrityError:
@@ -961,10 +1157,12 @@ def render_admin_student_profile(admin_user, student_id):
                     log_admin_action(admin_user["id"], "REVOKE_VERIFICATION", student["id"])
                     st.rerun()
             else:
-                if st.button("Verify Student Account", use_container_width=True):
+                if st.button("Verify & Approve Student Account", use_container_width=True):
                     conn.execute("UPDATE users SET verified=1 WHERE id=?", (student["id"],))
                     conn.commit()
                     log_admin_action(admin_user["id"], "GRANT_VERIFICATION", student["id"])
+                    notify(student["id"], "Your student account has been approved and verified by the administration!")
+                    st.success("Student approved & verified.")
                     st.rerun()
 
     with c2:
@@ -1105,18 +1303,22 @@ def render_admin_workspace(user):
 
     conn = get_conn()
     students_count = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student'").fetchone()["c"]
+    pending_approvals = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND verified=0").fetchone()["c"]
     open_disputes = conn.execute("SELECT COUNT(*) c FROM disputes WHERE status IN ('OPEN','UNDER_REVIEW')").fetchone()["c"]
     held_escrow = conn.execute("SELECT COALESCE(SUM(amount), 0) s FROM transactions WHERE status='HELD'").fetchone()["s"]
     active_deliveries = conn.execute("SELECT COUNT(*) c FROM requests WHERE status NOT IN ('COMPLETED', 'CANCELLED')").fetchone()["c"]
+    unread_admin_notifs = conn.execute("SELECT COUNT(*) c FROM admin_notifications WHERE is_read=0").fetchone()["c"]
     conn.close()
 
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Registered Students", students_count)
-    m2.metric("Open Disputes", open_disputes)
-    m3.metric("Held Escrow Value", f"₹{held_escrow:.0f}")
-    m4.metric("Active Runs", active_deliveries)
+    m2.metric("Pending Approvals", pending_approvals)
+    m3.metric("Open Disputes", open_disputes)
+    m4.metric("Admin Alerts", unread_admin_notifs)
+    m5.metric("Active Deliveries", active_deliveries)
 
     adm_tabs = st.tabs([
+        "🔔 Admin Alerts",
         "🔍 Search & Lookup Order",
         "📦 Delivery Orders", 
         "🤝 Borrowing Requests", 
@@ -1127,8 +1329,32 @@ def render_admin_workspace(user):
         "📢 Broadcast Notice"
     ])
 
-    # 1. Search Order
+    # ---------------- TAB 0: ADMIN NOTIFICATIONS / ALERTS ----------------
     with adm_tabs[0]:
+        st.markdown("#### 🔔 System Alerts & Event Inbox")
+        conn = get_conn()
+        notifs = conn.execute("SELECT * FROM admin_notifications ORDER BY id DESC LIMIT 50").fetchall()
+        conn.close()
+
+        if st.button("Mark All Alerts as Read"):
+            conn = get_conn()
+            conn.execute("UPDATE admin_notifications SET is_read=1")
+            conn.commit()
+            conn.close()
+            st.rerun()
+
+        if not notifs:
+            st.info("No incoming alerts at this time.")
+        for n in notifs:
+            with st.container(border=True):
+                icon = "⚠️" if n["category"] == "DISPUTE" else "👤"
+                badge = "🔴 UNREAD" if not n["is_read"] else "⚪ Read"
+                st.markdown(f"**{icon} [{n['category']}] Ref: `{n['reference_id']}`** — `{badge}`")
+                st.write(n["message"])
+                st.caption(f"Logged at: {n['created_at'][:19].replace('T', ' ')}")
+
+    # ---------------- TAB 1: INSTANT SEARCH BY TASK ID ----------------
+    with adm_tabs[1]:
         st.markdown("#### 🔍 Instant Order Search & Control")
         st.caption("Look up any delivery, borrow request, or task directly by entering its UNIH Task ID (e.g., `UNIH0004` or `4`).")
 
@@ -1251,8 +1477,8 @@ def render_admin_workspace(user):
             if not found_any:
                 st.warning(f"No order found matching Task ID `{task_code(parsed_id)}`.")
 
-    # 2. Delivery Orders
-    with adm_tabs[1]:
+    # ---------------- TAB 2: DELIVERY ORDERS ----------------
+    with adm_tabs[2]:
         st.markdown("#### Manage Delivery Orders")
         status_filter = st.selectbox("Filter Status", ["ALL", "CREATED", "ACCEPTED", "PICKUP_VERIFIED", "DELIVERED", "COMPLETED", "CANCELLED"], key="deliv_filter")
         
@@ -1312,8 +1538,8 @@ def render_admin_workspace(user):
                         st.warning(f"Task {code} deleted.")
                         st.rerun()
 
-    # 3. Borrowing Requests
-    with adm_tabs[2]:
+    # ---------------- TAB 3: BORROWING REQUESTS ----------------
+    with adm_tabs[3]:
         st.markdown("#### Manage Borrow Requests")
         conn = get_conn()
         borrow_reqs = conn.execute(
@@ -1353,8 +1579,8 @@ def render_admin_workspace(user):
                         st.warning(f"Borrow request {code} deleted.")
                         st.rerun()
 
-    # 4. Micro-Task Orders
-    with adm_tabs[3]:
+    # ---------------- TAB 4: MICRO-TASK ORDERS ----------------
+    with adm_tabs[4]:
         st.markdown("#### Manage Micro-Task Gigs")
         conn = get_conn()
         tasks = conn.execute(
@@ -1393,11 +1619,11 @@ def render_admin_workspace(user):
                         st.warning(f"Task {code} deleted.")
                         st.rerun()
 
-    # 5. Student Directory
-    with adm_tabs[4]:
-        st.markdown("#### Student Directory & Account Management")
+    # ---------------- TAB 5: STUDENT DIRECTORY & APPROVALS ----------------
+    with adm_tabs[5]:
+        st.markdown("#### Student Directory & New Account Approvals")
         conn = get_conn()
-        students = conn.execute("SELECT * FROM users WHERE role='student' ORDER BY id DESC").fetchall()
+        students = conn.execute("SELECT * FROM users WHERE role='student' ORDER BY verified ASC, id DESC").fetchall()
         conn.close()
 
         search_query = st.text_input("🔍 Search Student (by Name, Student ID, or Email)", placeholder="e.g. STU1001 or Aarav").strip().lower()
@@ -1413,15 +1639,26 @@ def render_admin_workspace(user):
             with st.container(border=True):
                 c_info, c_action = st.columns([3, 1.2])
                 with c_info:
-                    st.markdown(f"**{s['full_name']}** (`{s['student_id']}`) — Trust: **{s['trust_score']}/100** | 🪙 **{s['unicoins']} Coins**")
+                    approval_tag = "🟡 AWAITING APPROVAL" if not s["verified"] else "🟢 VERIFIED"
+                    st.markdown(f"**{s['full_name']}** (`{s['student_id']}`) — `{approval_tag}`")
                     st.caption(f"Email: {s['email']} | Phone: {s['phone'] or '—'} | Status: `{'🔴 Suspended' if s['is_suspended'] else '🟢 Active'}`")
                 with c_action:
+                    if not s["verified"]:
+                        if st.button("✅ Approve Account", key=f"appr_btn_{s['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE users SET verified=1 WHERE id=?", (s["id"],))
+                            conn.commit()
+                            conn.close()
+                            notify(s["id"], "Your student account registration has been approved by admin!")
+                            log_admin_action(user["id"], "APPROVE_ACCOUNT", s["id"], f"Approved account {s['student_id']}")
+                            st.success(f"Approved {s['full_name']}!")
+                            st.rerun()
                     if st.button("Manage Profile →", key=f"view_stu_{s['id']}", use_container_width=True):
                         st.session_state["admin_selected_student_id"] = s["id"]
                         st.rerun()
 
-    # 6. Dispute Queue
-    with adm_tabs[5]:
+    # ---------------- TAB 6: DISPUTE QUEUE ----------------
+    with adm_tabs[6]:
         st.markdown("#### Community Safety & Dispute Arbitration")
         conn = get_conn()
         disputes = conn.execute(
@@ -1457,8 +1694,8 @@ def render_admin_workspace(user):
                         st.info("Dispute dismissed.")
                         st.rerun()
 
-    # 7. Escrow Ledger
-    with adm_tabs[6]:
+    # ---------------- TAB 7: ESCROW LEDGER ----------------
+    with adm_tabs[7]:
         st.markdown("#### Global Escrow & Financial Audit Ledger")
         conn = get_conn()
         txs = conn.execute(
@@ -1478,8 +1715,8 @@ def render_admin_workspace(user):
             )
             st.divider()
 
-    # 8. Broadcast Notice
-    with adm_tabs[7]:
+    # ---------------- TAB 8: BROADCAST NOTICE ----------------
+    with adm_tabs[8]:
         st.markdown("#### Campus-Wide Broadcast Center")
         st.caption("Send notifications directly to all student dashboards.")
 
@@ -1501,7 +1738,7 @@ def render_admin_workspace(user):
                 st.success(f"Announcement broadcasted to {len(students)} active students!")
 
 # =============================================================================
-# 7. STUDENT WORKSPACE WITH CASCADING BLOCK & ROOM SELECTOR
+# 7. STUDENT WORKSPACE
 # =============================================================================
 
 def render_student_workspace(user):
@@ -1595,23 +1832,46 @@ def render_student_workspace(user):
 
                     elif r["status"] == "ACCEPTED":
                         if is_owner:
-                            st.info("Helper is assigned. Provide this OTP during item handover:")
-                            if st.button("Generate Handover Code", key=f"gen_h_code_{r['id']}"):
-                                code_otp = create_otp(user["id"], "HANDOVER_OTP", r["id"])
-                                st.success(f"Handover Code: **{code_otp}**")
+                            st.info("Helper is assigned. Provide this OTP or display the QR code for handover:")
+                            c_opt1, c_opt2 = st.columns(2)
+                            with c_opt1:
+                                if st.button("🔐 Generate Handover OTP", key=f"gen_h_code_{r['id']}"):
+                                    code_otp = create_otp(user["id"], "HANDOVER_OTP", r["id"])
+                                    st.success(f"Handover Code: **{code_otp}**")
+                            with c_opt2:
+                                if st.button("📱 Display Handover QR Code", key=f"gen_qr_{r['id']}"):
+                                    qr_tok = create_qr_token("DELIVERY", r["id"], "HANDOVER_QR")
+                                    st.image(generate_qr_bytes(qr_tok), width=180)
+                                    st.caption(f"Token string: `{qr_tok}`")
+
                         elif is_helper:
-                            st.markdown("##### Handover Verification")
-                            entered = st.text_input("Enter Handover Code from Requester", key=f"h_code_in_{r['id']}")
-                            if st.button("Confirm Handover", key=f"sub_h_code_{r['id']}"):
-                                ok, msg = verify_otp(r["requester_id"], "HANDOVER_OTP", r["id"], entered)
-                                if ok:
-                                    conn = get_conn()
-                                    conn.execute("UPDATE requests SET status='PICKUP_VERIFIED', pickup_verified_at=? WHERE id=?", (now_iso(), r["id"]))
-                                    conn.commit(); conn.close()
-                                    st.success("Handover confirmed! In Transit.")
-                                    st.rerun()
-                                else:
-                                    st.error(msg)
+                            st.markdown("##### Handover Verification (OTP or QR)")
+                            v_mode = st.radio("Verification Method", ["Enter OTP", "Scan / Enter QR Token"], horizontal=True, key=f"v_mode_{r['id']}")
+                            
+                            if v_mode == "Enter OTP":
+                                entered_otp = st.text_input("Enter Handover Code from Requester", key=f"h_code_in_{r['id']}")
+                                if st.button("Confirm Handover (OTP)", key=f"sub_h_code_{r['id']}"):
+                                    ok, msg = verify_otp(r["requester_id"], "HANDOVER_OTP", r["id"], entered_otp)
+                                    if ok:
+                                        conn = get_conn()
+                                        conn.execute("UPDATE requests SET status='PICKUP_VERIFIED', pickup_verified_at=? WHERE id=?", (now_iso(), r["id"]))
+                                        conn.commit(); conn.close()
+                                        st.success("Handover confirmed via OTP! In Transit.")
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                            else:
+                                entered_qr = st.text_input("Paste / Scan QR Token", placeholder="UNIH|DELIVERY|...", key=f"qr_in_{r['id']}")
+                                if st.button("Verify QR Code", key=f"sub_qr_{r['id']}"):
+                                    ok, msg = verify_qr_token(entered_qr, "DELIVERY", r["id"], "HANDOVER_QR")
+                                    if ok:
+                                        conn = get_conn()
+                                        conn.execute("UPDATE requests SET status='PICKUP_VERIFIED', pickup_verified_at=? WHERE id=?", (now_iso(), r["id"]))
+                                        conn.commit(); conn.close()
+                                        st.success("Handover verified via QR Code! In Transit.")
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
 
                     elif r["status"] == "PICKUP_VERIFIED" and is_helper:
                         if st.button("Mark as Delivered", key=f"mark_deliv_{r['id']}"):
@@ -1630,17 +1890,16 @@ def render_student_workspace(user):
                             st.success(f"Delivery {code} completed and reward released!")
                             st.rerun()
 
-    # 2. Demand-Driven Borrow Requests (With LPU Cascading Location Selector)
+    # 2. Demand-Driven Borrow Requests
     with tabs[1]:
         st.markdown("#### Demand-Driven Borrowing Hub")
-        st.caption("Need an item? Pick your campus block and room to post a borrow request.")
+        st.caption("Need an item? Pick your campus block and room to post a borrow request[cite: 2].")
 
         borrow_mode = st.radio("Borrow Mode", ["Live Campus Borrow Requests", "Post a Borrow Request"], horizontal=True, label_visibility="collapsed")
 
         if borrow_mode == "Post a Borrow Request":
             st.markdown("##### 📍 Select Your Campus Location")
             
-            # Interactive Cascading Selection
             loc_c1, loc_c2 = st.columns(2)
             with loc_c1:
                 selected_block = st.selectbox(
@@ -1724,46 +1983,93 @@ def render_student_workspace(user):
 
                     elif b["status"] == "ACCEPTED":
                         if is_lender:
-                            st.info(f"Handover Point: **{b['location']}**. Provide this Handover OTP to the borrower:")
-                            if st.button("Generate Handover Code", key=f"b_h_code_{b['id']}"):
-                                code_otp = create_otp(user["id"], "BORROW_HANDOVER", b["id"])
-                                st.success(f"Handover Code: **{code_otp}**")
+                            st.info(f"Handover Point: **{b['location']}**. Provide an OTP or display your QR Code:")
+                            c_b1, c_b2 = st.columns(2)
+                            with c_b1:
+                                if st.button("🔐 Generate Handover Code", key=f"b_h_code_{b['id']}"):
+                                    code_otp = create_otp(user["id"], "BORROW_HANDOVER", b["id"])
+                                    st.success(f"Handover Code: **{code_otp}**")
+                            with c_b2:
+                                if st.button("📱 Display Handover QR Code", key=f"b_qr_code_{b['id']}"):
+                                    qr_tok = create_qr_token("BORROWING", b["id"], "BORROW_HANDOVER_QR")
+                                    st.image(generate_qr_bytes(qr_tok), width=180)
+                                    st.caption(f"Token: `{qr_tok}`")
+
                         elif is_borrower:
                             st.markdown(f"##### Confirm Pickup at {b['location']}")
-                            entered = st.text_input("Enter Handover Code from Lender", key=f"b_h_in_{b['id']}")
-                            if st.button("Confirm Handover Received", key=f"sub_b_h_{b['id']}"):
-                                ok, msg = verify_otp(b["lender_id"], "BORROW_HANDOVER", b["id"], entered)
-                                if ok:
-                                    conn = get_conn()
-                                    conn.execute("UPDATE borrow_requests SET status='ACTIVE', pickup_verified_at=? WHERE id=?", (now_iso(), b["id"]))
-                                    conn.commit(); conn.close()
-                                    st.success("Handover confirmed! Borrowing is now ACTIVE.")
-                                    st.rerun()
-                                else:
-                                    st.error(msg)
+                            b_method = st.radio("Verification Method", ["Enter OTP", "Scan / Enter QR Token"], horizontal=True, key=f"b_vm_{b['id']}")
+                            if b_method == "Enter OTP":
+                                entered = st.text_input("Enter Handover Code from Lender", key=f"b_h_in_{b['id']}")
+                                if st.button("Confirm Handover Received (OTP)", key=f"sub_b_h_{b['id']}"):
+                                    ok, msg = verify_otp(b["lender_id"], "BORROW_HANDOVER", b["id"], entered)
+                                    if ok:
+                                        conn = get_conn()
+                                        conn.execute("UPDATE borrow_requests SET status='ACTIVE', pickup_verified_at=? WHERE id=?", (now_iso(), b["id"]))
+                                        conn.commit(); conn.close()
+                                        st.success("Handover confirmed! Borrowing is now ACTIVE.")
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                            else:
+                                entered_qr = st.text_input("Paste / Scan QR Token", placeholder="UNIH|BORROWING|...", key=f"b_qr_in_{b['id']}")
+                                if st.button("Verify QR Handover", key=f"sub_b_qr_{b['id']}"):
+                                    ok, msg = verify_qr_token(entered_qr, "BORROWING", b["id"], "BORROW_HANDOVER_QR")
+                                    if ok:
+                                        conn = get_conn()
+                                        conn.execute("UPDATE borrow_requests SET status='ACTIVE', pickup_verified_at=? WHERE id=?", (now_iso(), b["id"]))
+                                        conn.commit(); conn.close()
+                                        st.success("Handover verified via QR! Borrowing is now ACTIVE.")
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
 
                     elif b["status"] == "ACTIVE":
                         if is_borrower:
-                            st.info("Item is currently with you. Give this return code to the owner upon returning:")
-                            if st.button("Generate Return Code", key=f"b_ret_code_{b['id']}"):
-                                code_otp = create_otp(user["id"], "BORROW_RETURN", b["id"])
-                                st.success(f"Return Code: **{code_otp}**")
+                            st.info("Item is with you. When returning, provide this OTP or display your QR Code:")
+                            c_r1, c_r2 = st.columns(2)
+                            with c_r1:
+                                if st.button("🔐 Generate Return Code", key=f"b_ret_code_{b['id']}"):
+                                    code_otp = create_otp(user["id"], "BORROW_RETURN", b["id"])
+                                    st.success(f"Return Code: **{code_otp}**")
+                            with c_r2:
+                                if st.button("📱 Display Return QR Code", key=f"b_ret_qr_{b['id']}"):
+                                    qr_tok = create_qr_token("BORROWING", b["id"], "BORROW_RETURN_QR")
+                                    st.image(generate_qr_bytes(qr_tok), width=180)
+                                    st.caption(f"Token: `{qr_tok}`")
+
                         elif is_lender:
                             st.markdown("##### Confirm Item Returned")
-                            entered_ret = st.text_input("Enter Return Code from Borrower", key=f"b_ret_in_{b['id']}")
-                            if st.button("Confirm Item Received Back", key=f"sub_b_ret_{b['id']}"):
-                                ok, msg = verify_otp(b["borrower_id"], "BORROW_RETURN", b["id"], entered_ret)
-                                if ok:
-                                    conn = get_conn()
-                                    conn.execute("UPDATE borrow_requests SET status='COMPLETED', returned_at=? WHERE id=?", (now_iso(), b["id"]))
-                                    conn.commit(); conn.close()
-                                    update_transaction_status("BORROW_DEPOSIT", b["id"], "RELEASED")
-                                    update_transaction_status("BORROW_REWARD", b["id"], "RELEASED")
-                                    add_unicoins(b["lender_id"], 15, f"Lent item {code}")
-                                    st.success("Item returned! Deposit and reward released from escrow.")
-                                    st.rerun()
-                                else:
-                                    st.error(msg)
+                            r_method = st.radio("Verification Method", ["Enter OTP", "Scan / Enter QR Token"], horizontal=True, key=f"r_vm_{b['id']}")
+                            if r_method == "Enter OTP":
+                                entered_ret = st.text_input("Enter Return Code from Borrower", key=f"b_ret_in_{b['id']}")
+                                if st.button("Confirm Item Received Back (OTP)", key=f"sub_b_ret_{b['id']}"):
+                                    ok, msg = verify_otp(b["borrower_id"], "BORROW_RETURN", b["id"], entered_ret)
+                                    if ok:
+                                        conn = get_conn()
+                                        conn.execute("UPDATE borrow_requests SET status='COMPLETED', returned_at=? WHERE id=?", (now_iso(), b["id"]))
+                                        conn.commit(); conn.close()
+                                        update_transaction_status("BORROW_DEPOSIT", b["id"], "RELEASED")
+                                        update_transaction_status("BORROW_REWARD", b["id"], "RELEASED")
+                                        add_unicoins(b["lender_id"], 15, f"Lent item {code}")
+                                        st.success("Item returned! Deposit and reward released from escrow.")
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
+                            else:
+                                entered_ret_qr = st.text_input("Paste / Scan QR Token", placeholder="UNIH|BORROWING|...", key=f"b_ret_qr_in_{b['id']}")
+                                if st.button("Verify QR Return", key=f"sub_b_ret_qr_{b['id']}"):
+                                    ok, msg = verify_qr_token(entered_ret_qr, "BORROWING", b["id"], "BORROW_RETURN_QR")
+                                    if ok:
+                                        conn = get_conn()
+                                        conn.execute("UPDATE borrow_requests SET status='COMPLETED', returned_at=? WHERE id=?", (now_iso(), b["id"]))
+                                        conn.commit(); conn.close()
+                                        update_transaction_status("BORROW_DEPOSIT", b["id"], "RELEASED")
+                                        update_transaction_status("BORROW_REWARD", b["id"], "RELEASED")
+                                        add_unicoins(b["lender_id"], 15, f"Lent item {code}")
+                                        st.success("Item returned! Deposit and reward released from escrow.")
+                                        st.rerun()
+                                    else:
+                                        st.error(msg)
 
     # 3. Micro-Tasks
     with tabs[2]:
@@ -1862,27 +2168,40 @@ def render_student_workspace(user):
             stat_c2.metric("Tasks Completed", completed_tasks)
             stat_c3.metric("Active Borrows", active_borrows)
 
-    # 6. Disputes
+    # 6. Disputes (Direct UNIH Task ID Entry)
     with tabs[5]:
         st.markdown("#### Raise a Campus Dispute")
+        st.caption("Enter the Task ID (e.g. `UNIH0004` or simply `4`) to file a dispute directly.")
         with st.form("raise_dispute_form"):
             t_src = st.selectbox("Service Type", ["DELIVERY", "BORROWING", "TASK"])
-            r_id = st.number_input("Task Numeric ID (e.g. for UNIH0004 enter 4)", min_value=1, step=1)
+            raw_task_input = st.text_input("Task ID (e.g. UNIH0004 or 4)", placeholder="UNIH0001", key="disp_task_str")
             cat = st.selectbox("Category", ["Item Damaged", "No-Show / Abandoned", "Incomplete Task", "Other"])
             exp = st.text_area("Explanation")
             sub_disp = st.form_submit_button("Submit Dispute", type="primary")
 
             if sub_disp:
-                conn = get_conn()
-                conn.execute(
-                    """INSERT INTO disputes (transaction_type, transaction_id, reporter_id, category, description, status, created_at)
-                       VALUES (?, ?, ?, ?, ?, 'OPEN', ?)""",
-                    (t_src, r_id, user["id"], cat, exp.strip(), now_iso()),
-                )
-                conn.commit(); conn.close()
-                update_transaction_status(t_src, r_id, "DISPUTED")
-                st.success(f"Dispute filed for {task_code(r_id)}. Escrow funds have been frozen for proctor arbitration.")
-                st.rerun()
+                parsed_id = parse_task_id(raw_task_input)
+                if not parsed_id:
+                    st.error("Please enter a valid Task ID (e.g. UNIH0004 or 4).")
+                elif not exp.strip():
+                    st.error("Please provide a description of the issue.")
+                else:
+                    conn = get_conn()
+                    conn.execute(
+                        """INSERT INTO disputes (transaction_type, transaction_id, reporter_id, category, description, status, created_at)
+                           VALUES (?, ?, ?, ?, ?, 'OPEN', ?)""",
+                        (t_src, parsed_id, user["id"], cat, exp.strip(), now_iso()),
+                    )
+                    conn.commit()
+                    conn.close()
+                    update_transaction_status(t_src, parsed_id, "DISPUTED")
+                    notify_admin(
+                        "DISPUTE",
+                        task_code(parsed_id),
+                        f"Student {user['full_name']} filed a dispute on {t_src} {task_code(parsed_id)}: '{cat}'"
+                    )
+                    st.success(f"Dispute filed for {task_code(parsed_id)}. Administration notified and escrow frozen.")
+                    st.rerun()
 
 # =============================================================================
 # 8. MAIN CONTROLLER
