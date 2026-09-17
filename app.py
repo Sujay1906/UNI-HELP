@@ -57,6 +57,16 @@ EMAIL_CONFIGURED = bool(SMTP_HOST and SMTP_PORT and SMTP_USERNAME and SMTP_PASSW
 for d in (UPLOADS_DIR, QR_DIR, PHOTOS_DIR):
     os.makedirs(d, exist_ok=True)
 
+def task_code(entity_id):
+    return f"UNIH{int(entity_id):04d}"
+
+def parse_task_id(query_str):
+    clean = query_str.strip().upper()
+    if clean.startswith("UNIH"):
+        digits = clean.replace("UNIH", "")
+        return int(digits) if digits.isdigit() else None
+    return int(clean) if clean.isdigit() else None
+
 # =============================================================================
 # 1. DATABASE & INITIALIZATION
 # =============================================================================
@@ -68,6 +78,11 @@ def get_conn():
     return conn
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS system_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     full_name TEXT NOT NULL,
@@ -201,6 +216,15 @@ CREATE TABLE IF NOT EXISTS unicoin_transactions (
     reason TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS admin_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER NOT NULL REFERENCES users(id),
+    action TEXT NOT NULL,
+    target_id INTEGER,
+    details TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 def now_iso():
@@ -231,17 +255,33 @@ def init_db():
                 now_iso(),
             ),
         )
-        conn.commit()
+    # Check default platform pause state
+    st_row = conn.execute("SELECT value FROM system_settings WHERE key = 'platform_paused'").fetchone()
+    if st_row is None:
+        conn.execute("INSERT INTO system_settings (key, value) VALUES ('platform_paused', 'false')")
+    conn.commit()
+    conn.close()
+
+def is_platform_paused():
+    conn = get_conn()
+    row = conn.execute("SELECT value FROM system_settings WHERE key = 'platform_paused'").fetchone()
+    conn.close()
+    return bool(row and row["value"].lower() == "true")
+
+def set_platform_paused(paused: bool):
+    conn = get_conn()
+    conn.execute("UPDATE system_settings SET value = ? WHERE key = 'platform_paused'", ('true' if paused else 'false',))
+    conn.commit()
     conn.close()
 
 # =============================================================================
-# 2. EMAIL & TOKEN SERVICES
+# 2. EMAIL & SECURITY SERVICES
 # =============================================================================
 
 def send_realtime_email(to_email, subject, body):
     if not EMAIL_CONFIGURED:
         st.session_state["_last_email_simulated"] = (to_email, subject, body)
-        return False, "SMTP is not fully configured (check secrets.toml). A simulated preview has been provided below."
+        return False, "SMTP is not fully configured. A simulated preview has been provided below."
 
     try:
         msg = MIMEText(body, "plain", "utf-8")
@@ -440,6 +480,15 @@ def notify(user_id, message):
     conn.commit()
     conn.close()
 
+def log_admin_action(admin_id, action, target_id, details=""):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO admin_actions (admin_id, action, target_id, details, created_at) VALUES (?, ?, ?, ?, ?)",
+        (admin_id, action, target_id, details, now_iso())
+    )
+    conn.commit()
+    conn.close()
+
 def add_unicoins(user_id, amount, reason):
     conn = get_conn()
     conn.execute("UPDATE users SET unicoins = unicoins + ? WHERE id = ?", (amount, user_id))
@@ -470,6 +519,20 @@ def update_transaction_status(related_type, related_id, status):
     conn.commit()
     conn.close()
 
+# Delete Helpers for Admin
+def delete_order(order_type, order_id):
+    conn = get_conn()
+    if order_type == "DELIVERY":
+        conn.execute("DELETE FROM requests WHERE id = ?", (order_id,))
+    elif order_type == "BORROWING":
+        conn.execute("DELETE FROM borrowings WHERE id = ?", (order_id,))
+    elif order_type == "TASK":
+        conn.execute("DELETE FROM tasks WHERE id = ?", (order_id,))
+    conn.execute("DELETE FROM transactions WHERE related_type = ? AND related_id = ?", (order_type, order_id))
+    conn.execute("DELETE FROM disputes WHERE transaction_type = ? AND transaction_id = ?", (order_type, order_id))
+    conn.commit()
+    conn.close()
+
 # =============================================================================
 # 4. PAGE ROUTING & STATE
 # =============================================================================
@@ -491,6 +554,8 @@ if "user" not in st.session_state:
     st.session_state["user"] = None
 if "auth_mode" not in st.session_state:
     st.session_state["auth_mode"] = "student_login"
+if "admin_selected_student_id" not in st.session_state:
+    st.session_state["admin_selected_student_id"] = None
 
 def show_simulated_dispatch_box():
     if "_last_email_simulated" in st.session_state:
@@ -759,8 +824,160 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. ADMIN WORKSPACE
+# 6. EXPANDED ADMIN WORKSPACE WITH SEARCH, CONTROLS, & KILL-SWITCH
 # =============================================================================
+
+def render_admin_student_profile(admin_user, student_id):
+    conn = get_conn()
+    student = conn.execute("SELECT * FROM users WHERE id=? AND role='student'", (student_id,)).fetchone()
+    if not student:
+        conn.close()
+        st.error("Student profile could not be found.")
+        if st.button("← Back to Student Registry"):
+            st.session_state["admin_selected_student_id"] = None
+            st.rerun()
+        return
+
+    st.markdown(f"### 👤 Student Profile: {student['full_name']}")
+    if st.button("← Back to Student Registry", key="prof_back_top"):
+        st.session_state["admin_selected_student_id"] = None
+        st.rerun()
+
+    c1, c2 = st.columns([1.5, 2])
+    with c1:
+        with st.container(border=True):
+            st.markdown("##### Account Details")
+            st.write(f"**Student ID:** `{student['student_id']}`")
+            st.write(f"**Email:** {student['email']}")
+            st.write(f"**Phone:** {student['phone'] or 'Not provided'}")
+            st.write(f"**Joined:** {student['created_at'][:10]}")
+            st.write(f"**Status:** `{'🔴 Suspended' if student['is_suspended'] else '🟢 Active'}`")
+            st.write(f"**Verified:** `{'✓ Yes' if student['verified'] else '○ No'}`")
+
+            st.divider()
+            st.markdown("##### Moderation Actions")
+            if student["is_suspended"]:
+                if st.button("Unsuspend Student Account", use_container_width=True):
+                    conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (student["id"],))
+                    conn.commit()
+                    log_admin_action(admin_user["id"], "UNSUSPEND_USER", student["id"], "Account unsuspended by admin")
+                    st.success("User unsuspended.")
+                    st.rerun()
+            else:
+                if st.button("Suspend Student Account", use_container_width=True):
+                    conn.execute("UPDATE users SET is_suspended=1 WHERE id=?", (student["id"],))
+                    conn.commit()
+                    log_admin_action(admin_user["id"], "SUSPEND_USER", student["id"], "Account suspended by admin")
+                    st.warning("User suspended.")
+                    st.rerun()
+
+            if student["verified"]:
+                if st.button("Revoke Verification Status", use_container_width=True):
+                    conn.execute("UPDATE users SET verified=0 WHERE id=?", (student["id"],))
+                    conn.commit()
+                    log_admin_action(admin_user["id"], "REVOKE_VERIFICATION", student["id"])
+                    st.rerun()
+            else:
+                if st.button("Verify Student Account", use_container_width=True):
+                    conn.execute("UPDATE users SET verified=1 WHERE id=?", (student["id"],))
+                    conn.commit()
+                    log_admin_action(admin_user["id"], "GRANT_VERIFICATION", student["id"])
+                    st.rerun()
+
+    with c2:
+        with st.container(border=True):
+            st.markdown("##### Balance & Reputation Adjustments")
+            m1, m2 = st.columns(2)
+            m1.metric("Trust Score", f"{student['trust_score']}/100")
+            m2.metric("UniCoins", f"🪙 {student['unicoins']}")
+
+            new_trust = st.slider("Adjust Trust Score", 0, 100, student["trust_score"], key="adjust_trust_slider")
+            if st.button("Save Trust Score"):
+                conn.execute("UPDATE users SET trust_score=? WHERE id=?", (new_trust, student["id"]))
+                conn.commit()
+                log_admin_action(admin_user["id"], "UPDATE_TRUST", student["id"], f"Trust score set to {new_trust}")
+                st.success("Trust score updated!")
+                st.rerun()
+
+            st.write("")
+            adj_col1, adj_col2 = st.columns(2)
+            coin_adjust = adj_col1.number_input("Add/Deduct UniCoins", min_value=-500, max_value=500, value=10, step=5)
+            reason = adj_col2.text_input("Reason", value="Admin Adjustment")
+            if st.button("Apply UniCoin Change"):
+                add_unicoins(student["id"], coin_adjust, reason)
+                log_admin_action(admin_user["id"], "ADJUST_UNICOINS", student["id"], f"{coin_adjust} coins: {reason}")
+                st.success(f"{coin_adjust:+d} UniCoins adjusted.")
+                st.rerun()
+
+    st.write("")
+    st.markdown("##### Complete Student Activity Audit History")
+    h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs(["📦 Delivery Requests", "🤝 Borrowings", "🛠 Micro-Tasks", "💰 Transactions"])
+
+    with h_tab1:
+        delivs = conn.execute(
+            """SELECT r.*, req.full_name requester_name, h.full_name helper_name 
+               FROM requests r 
+               JOIN users req ON req.id = r.requester_id 
+               LEFT JOIN users h ON h.id = r.helper_id
+               WHERE r.requester_id = ? OR r.helper_id = ? ORDER BY r.id DESC""",
+            (student["id"], student["id"])
+        ).fetchall()
+        if not delivs:
+            st.caption("No deliveries associated with this student.")
+        for d in delivs:
+            role = "Requester" if d["requester_id"] == student["id"] else "Helper"
+            st.markdown(f"**Task ID: `{task_code(d['id'])}` — {d['item_name']}** (`{d['status']}`) — Role: **{role}** | Reward: ₹{d['reward']:.0f}")
+            st.caption(f"Route: {d['pickup_location']} ➔ {d['destination']} | Created: {d['created_at'][:16]}")
+            st.divider()
+
+    with h_tab2:
+        borrows = conn.execute(
+            """SELECT b.*, i.item_name, o.full_name owner_name, bor.full_name borrower_name 
+               FROM borrowings b
+               JOIN items i ON i.id = b.item_id
+               JOIN users o ON o.id = b.owner_id
+               JOIN users bor ON bor.id = b.borrower_id
+               WHERE b.owner_id = ? OR b.borrower_id = ? ORDER BY b.id DESC""",
+            (student["id"], student["id"])
+        ).fetchall()
+        if not borrows:
+            st.caption("No borrowing history for this student.")
+        for b in borrows:
+            role = "Lender/Owner" if b["owner_id"] == student["id"] else "Borrower"
+            st.markdown(f"**Task ID: `{task_code(b['id'])}` — {b['item_name']}** (`{b['status']}`) — Role: **{role}** | Deposit: ₹{b['deposit']:.0f}")
+            st.caption(f"Owner: {b['owner_name']} | Borrower: {b['borrower_name']} | Date: {b['created_at'][:16]}")
+            st.divider()
+
+    with h_tab3:
+        tsks = conn.execute(
+            """SELECT t.*, c.full_name creator_name, h.full_name helper_name 
+               FROM tasks t
+               JOIN users c ON c.id = t.creator_id
+               LEFT JOIN users h ON h.id = t.helper_id
+               WHERE t.creator_id = ? OR t.helper_id = ? ORDER BY t.id DESC""",
+            (student["id"], student["id"])
+        ).fetchall()
+        if not tsks:
+            st.caption("No micro-tasks associated with this student.")
+        for t in tsks:
+            role = "Creator" if t["creator_id"] == student["id"] else "Helper"
+            st.markdown(f"**Task ID: `{task_code(t['id'])}` — {t['title']}** (`{t['status']}`) — Role: **{role}** | Reward: ₹{t['reward']:.0f}")
+            st.caption(f"Category: {t['category']} | Created: {t['created_at'][:16]}")
+            st.divider()
+
+    with h_tab4:
+        txs = conn.execute(
+            """SELECT * FROM transactions WHERE payer_id = ? OR payee_id = ? ORDER BY id DESC""",
+            (student["id"], student["id"])
+        ).fetchall()
+        if not txs:
+            st.caption("No transactions for this student.")
+        for tx in txs:
+            role = "Payer" if tx["payer_id"] == student["id"] else "Payee"
+            st.markdown(f"**TXN #{tx['id']}** — ₹{tx['amount']:.0f} (`{tx['status']}`) | Role: **{role}** | Related: {tx['related_type']} `{task_code(tx['related_id'])}`")
+            st.divider()
+
+    conn.close()
 
 def render_admin_workspace(user):
     top1, top2 = st.columns([3, 1])
@@ -768,12 +985,42 @@ def render_admin_workspace(user):
         st.markdown("### 🛡️ Campus Administration Control Center")
         st.caption(f"Authenticated Officer: **{user['full_name']}** ({user['email']})")
     with top2:
+        st.write("")
         if st.button("🚪 Logout of Admin Console", use_container_width=True):
             st.session_state["user"] = None
+            st.session_state["admin_selected_student_id"] = None
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
     st.divider()
+
+    # Emergency Kill-Switch Banner
+    current_paused = is_platform_paused()
+    with st.container(border=True):
+        p_c1, p_c2 = st.columns([3.5, 1.5])
+        with p_c1:
+            if current_paused:
+                st.error("🚨 **PLATFORM EMERGENCY STATUS: PAUSED / STOPPED**\n\nStudents cannot post or complete tasks right now.")
+            else:
+                st.success("🟢 **PLATFORM STATUS: ACTIVE & RUNNING**\n\nAll student services and micro-networks are online.")
+        with p_c2:
+            st.write("")
+            if current_paused:
+                if st.button("▶️ Resume UNI HELP Network", use_container_width=True, type="primary"):
+                    set_platform_paused(False)
+                    log_admin_action(user["id"], "RESUME_PLATFORM", None, "Emergency stop removed by admin")
+                    st.success("Platform has been resumed!")
+                    st.rerun()
+            else:
+                if st.button("⏸️ Emergency Stop / Pause App", use_container_width=True):
+                    set_platform_paused(True)
+                    log_admin_action(user["id"], "PAUSE_PLATFORM", None, "Emergency stop engaged by admin")
+                    st.warning("Platform paused!")
+                    st.rerun()
+
+    if st.session_state.get("admin_selected_student_id"):
+        render_admin_student_profile(user, st.session_state["admin_selected_student_id"])
+        return
 
     conn = get_conn()
     students_count = conn.execute("SELECT COUNT(*) c FROM users WHERE role='student'").fetchone()["c"]
@@ -783,14 +1030,319 @@ def render_admin_workspace(user):
     conn.close()
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Verified Students", students_count)
+    m1.metric("Registered Students", students_count)
     m2.metric("Open Disputes", open_disputes)
     m3.metric("Held Escrow Value", f"₹{held_escrow:.0f}")
     m4.metric("Active Runs", active_deliveries)
 
-    adm_tab1, adm_tab2, adm_tab3 = st.tabs(["⚠️ Dispute Resolution", "👥 Student Registry", "💰 Escrow Oversight"])
+    adm_tabs = st.tabs([
+        "🔍 Search & Lookup Order",
+        "📦 Delivery Orders", 
+        "🤝 Borrowing Orders", 
+        "🛠 Micro-Task Orders", 
+        "👥 Student Profiles", 
+        "⚠️ Dispute Queue", 
+        "💰 Escrow Ledger",
+        "📢 Broadcast Notice"
+    ])
 
-    with adm_tab1:
+    # ---------------- TAB 1: INSTANT SEARCH BY TASK ID & MANAGE ----------------
+    with adm_tabs[0]:
+        st.markdown("#### 🔍 Instant Order Search & Control")
+        st.caption("Look up any delivery, borrowing, or task directly by entering its UNIH Task ID (e.g., `UNIH0004` or `4`).")
+
+        search_id_input = st.text_input("Enter Task ID", placeholder="e.g. UNIH0001 or 1").strip()
+        parsed_id = parse_task_id(search_id_input) if search_id_input else None
+
+        if parsed_id:
+            conn = get_conn()
+            req = conn.execute(
+                """SELECT r.*, req.full_name requester_name, h.full_name helper_name 
+                   FROM requests r 
+                   JOIN users req ON req.id = r.requester_id 
+                   LEFT JOIN users h ON h.id = r.helper_id 
+                   WHERE r.id = ?""", (parsed_id,)
+            ).fetchone()
+
+            bor = conn.execute(
+                """SELECT b.*, i.item_name, o.full_name owner_name, bor.full_name borrower_name 
+                   FROM borrowings b
+                   JOIN items i ON i.id = b.item_id
+                   JOIN users o ON o.id = b.owner_id
+                   JOIN users bor ON bor.id = b.borrower_id
+                   WHERE b.id = ?""", (parsed_id,)
+            ).fetchone()
+
+            tsk = conn.execute(
+                """SELECT t.*, c.full_name creator_name, h.full_name helper_name 
+                   FROM tasks t
+                   JOIN users c ON c.id = t.creator_id
+                   LEFT JOIN users h ON h.id = t.helper_id
+                   WHERE t.id = ?""", (parsed_id,)
+            ).fetchone()
+            conn.close()
+
+            found_any = False
+
+            if req:
+                found_any = True
+                with st.container(border=True):
+                    st.markdown(f"##### 📦 Delivery Order: `{task_code(req['id'])}` — {req['item_name']}")
+                    st.caption(f"Status: **{req['status']}** | Requester: **{req['requester_name']}** | Helper: **{req['helper_name'] or 'None'}** | Reward: ₹{req['reward']:.0f}")
+                    st.write(f"**Route:** {req['pickup_location']} ➔ {req['destination']}")
+
+                    b_c1, b_c2, b_c3 = st.columns(3)
+                    with b_c1:
+                        if req["status"] in ("ACCEPTED", "PICKUP_VERIFIED"):
+                            if st.button("⚡ Permit OTP-less Pickup Handover", key=f"bypass_del_{req['id']}"):
+                                conn = get_conn()
+                                conn.execute("UPDATE requests SET status='PICKUP_VERIFIED', pickup_verified_at=? WHERE id=?", (now_iso(), req["id"]))
+                                conn.commit(); conn.close()
+                                log_admin_action(user["id"], "ADMIN_BYPASS_PICKUP_OTP", req["id"], "Pickup approved without OTP")
+                                st.success("OTP-less handover approved! Status updated to Pickup Verified.")
+                                st.rerun()
+                    with b_c2:
+                        if req["status"] not in ("COMPLETED", "CANCELLED"):
+                            if st.button("Force Complete & Release Escrow", key=f"srch_fc_del_{req['id']}"):
+                                conn = get_conn()
+                                conn.execute("UPDATE requests SET status='COMPLETED', completed_at=? WHERE id=?", (now_iso(), req["id"]))
+                                conn.commit(); conn.close()
+                                update_transaction_status("DELIVERY", req["id"], "RELEASED")
+                                log_admin_action(user["id"], "FORCE_COMPLETE_DELIVERY", req["id"])
+                                st.success("Force completed.")
+                                st.rerun()
+                    with b_c3:
+                        if st.button("🗑️ Delete Order Permanently", key=f"del_srch_req_{req['id']}"):
+                            delete_order("DELIVERY", req["id"])
+                            log_admin_action(user["id"], "DELETE_ORDER", req["id"], "Deleted delivery order")
+                            st.warning("Order deleted.")
+                            st.rerun()
+
+            if bor:
+                found_any = True
+                with st.container(border=True):
+                    st.markdown(f"##### 🤝 Borrowing Order: `{task_code(bor['id'])}` — {bor['item_name']}")
+                    st.caption(f"Status: **{bor['status']}** | Owner: **{bor['owner_name']}** | Borrower: **{bor['borrower_name']}** | Deposit: ₹{bor['deposit']:.0f}")
+
+                    b_c1, b_c2 = st.columns(2)
+                    with b_c1:
+                        if bor["status"] not in ("COMPLETED", "REJECTED", "CANCELLED"):
+                            if st.button("Force Return & Release Deposit", key=f"srch_fc_bor_{bor['id']}"):
+                                conn = get_conn()
+                                conn.execute("UPDATE borrowings SET status='COMPLETED' WHERE id=?", (bor["id"],))
+                                conn.execute("UPDATE items SET status='AVAILABLE' WHERE id=?", (bor["item_id"],))
+                                conn.commit(); conn.close()
+                                update_transaction_status("BORROW_DEPOSIT", bor["id"], "RELEASED")
+                                log_admin_action(user["id"], "FORCE_COMPLETE_BORROWING", bor["id"])
+                                st.success("Borrowing returned.")
+                                st.rerun()
+                    with b_c2:
+                        if st.button("🗑️ Delete Order Permanently", key=f"del_srch_bor_{bor['id']}"):
+                            delete_order("BORROWING", bor["id"])
+                            log_admin_action(user["id"], "DELETE_ORDER", bor["id"], "Deleted borrow order")
+                            st.warning("Order deleted.")
+                            st.rerun()
+
+            if tsk:
+                found_any = True
+                with st.container(border=True):
+                    st.markdown(f"##### 🛠 Micro-Task: `{task_code(tsk['id'])}` — {tsk['title']}")
+                    st.caption(f"Status: **{tsk['status']}** | Creator: **{tsk['creator_name']}** | Helper: **{tsk['helper_name'] or 'None'}** | Reward: ₹{tsk['reward']:.0f}")
+                    st.write(tsk["description"])
+
+                    b_c1, b_c2 = st.columns(2)
+                    with b_c1:
+                        if tsk["status"] not in ("COMPLETED", "CANCELLED"):
+                            if st.button("Force Complete Task", key=f"srch_fc_tsk_{tsk['id']}"):
+                                conn = get_conn()
+                                conn.execute("UPDATE tasks SET status='COMPLETED' WHERE id=?", (tsk["id"],))
+                                conn.commit(); conn.close()
+                                update_transaction_status("TASK", tsk["id"], "RELEASED")
+                                log_admin_action(user["id"], "FORCE_COMPLETE_TASK", tsk["id"])
+                                st.success("Task completed.")
+                                st.rerun()
+                    with b_c2:
+                        if st.button("🗑️ Delete Task Permanently", key=f"del_srch_tsk_{tsk['id']}"):
+                            delete_order("TASK", tsk["id"])
+                            log_admin_action(user["id"], "DELETE_ORDER", tsk["id"], "Deleted micro-task")
+                            st.warning("Task deleted.")
+                            st.rerun()
+
+            if not found_any:
+                st.warning(f"No order found matching Task ID `{task_code(parsed_id)}`.")
+
+    # ---------------- TAB 2: DELIVERY ORDERS ----------------
+    with adm_tabs[1]:
+        st.markdown("#### Manage Delivery Orders")
+        status_filter = st.selectbox("Filter Status", ["ALL", "CREATED", "ACCEPTED", "PICKUP_VERIFIED", "DELIVERED", "COMPLETED", "CANCELLED"], key="deliv_filter")
+        
+        conn = get_conn()
+        query = """SELECT r.*, req.full_name requester_name, h.full_name helper_name 
+                   FROM requests r 
+                   JOIN users req ON req.id = r.requester_id 
+                   LEFT JOIN users h ON h.id = r.helper_id"""
+        if status_filter != "ALL":
+            query += f" WHERE r.status = '{status_filter}'"
+        query += " ORDER BY r.id DESC"
+        deliv_rows = conn.execute(query).fetchall()
+        conn.close()
+
+        if not deliv_rows:
+            st.info("No delivery orders match this filter.")
+        for r in deliv_rows:
+            with st.container(border=True):
+                d_c1, d_c2 = st.columns([3, 1.8])
+                code = task_code(r["id"])
+                with d_c1:
+                    st.markdown(f"**Task ID: `{code}` — {r['item_name']}** — ₹{r['reward']:.0f} | Status: `{r['status']}`")
+                    st.caption(f"Requester: **{r['requester_name']}** | Helper: **{r['helper_name'] or 'Unassigned'}**")
+                    st.caption(f"Route: {r['pickup_location']} ➔ {r['destination']} | Created: {r['created_at'][:16]}")
+                with d_c2:
+                    if r["status"] == "ACCEPTED":
+                        if st.button("⚡ Permit OTP-less Handover", key=f"bypass_list_{r['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE requests SET status='PICKUP_VERIFIED', pickup_verified_at=? WHERE id=?", (now_iso(), r["id"]))
+                            conn.commit(); conn.close()
+                            log_admin_action(user["id"], "ADMIN_BYPASS_PICKUP_OTP", r["id"])
+                            st.success("OTP-less handover approved!")
+                            st.rerun()
+
+                    if r["status"] not in ("COMPLETED", "CANCELLED"):
+                        if st.button("Force Complete & Pay", key=f"force_comp_del_{r['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE requests SET status='COMPLETED', completed_at=? WHERE id=?", (now_iso(), r["id"]))
+                            conn.commit(); conn.close()
+                            update_transaction_status("DELIVERY", r["id"], "RELEASED")
+                            log_admin_action(user["id"], "FORCE_COMPLETE_DELIVERY", r["id"])
+                            st.success(f"Task {code} completed.")
+                            st.rerun()
+
+                        if st.button("Cancel & Refund", key=f"force_cancel_del_{r['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE requests SET status='CANCELLED' WHERE id=?", (r["id"],))
+                            conn.commit(); conn.close()
+                            update_transaction_status("DELIVERY", r["id"], "CANCELLED")
+                            log_admin_action(user["id"], "FORCE_CANCEL_DELIVERY", r["id"])
+                            st.warning(f"Task {code} cancelled.")
+                            st.rerun()
+
+                    if st.button("🗑️ Delete Order", key=f"del_deliv_{r['id']}", use_container_width=True):
+                        delete_order("DELIVERY", r["id"])
+                        log_admin_action(user["id"], "DELETE_ORDER", r["id"], "Deleted delivery order")
+                        st.warning(f"Task {code} deleted.")
+                        st.rerun()
+
+    # ---------------- TAB 3: BORROWING ORDERS ----------------
+    with adm_tabs[2]:
+        st.markdown("#### Manage Borrowing Orders & Assets")
+        conn = get_conn()
+        borrowings = conn.execute(
+            """SELECT b.*, i.item_name, o.full_name owner_name, bor.full_name borrower_name 
+               FROM borrowings b
+               JOIN items i ON i.id = b.item_id
+               JOIN users o ON o.id = b.owner_id
+               JOIN users bor ON bor.id = b.borrower_id
+               ORDER BY b.id DESC"""
+        ).fetchall()
+        conn.close()
+
+        if not borrowings:
+            st.info("No borrowing orders logged.")
+        for b in borrowings:
+            with st.container(border=True):
+                b_c1, b_c2 = st.columns([3, 1.8])
+                code = task_code(b["id"])
+                with b_c1:
+                    st.markdown(f"**Task ID: `{code}` — {b['item_name']}** — Deposit: ₹{b['deposit']:.0f} | Status: `{b['status']}`")
+                    st.caption(f"Lender: **{b['owner_name']}** | Borrower: **{b['borrower_name']}** | Initiated: {b['created_at'][:16]}")
+                with b_c2:
+                    if b["status"] not in ("COMPLETED", "REJECTED", "CANCELLED"):
+                        if st.button("Force Complete & Return Deposit", key=f"force_comp_bor_{b['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE borrowings SET status='COMPLETED' WHERE id=?", (b["id"],))
+                            conn.execute("UPDATE items SET status='AVAILABLE' WHERE id=?", (b["item_id"],))
+                            conn.commit(); conn.close()
+                            update_transaction_status("BORROW_DEPOSIT", b["id"], "RELEASED")
+                            log_admin_action(user["id"], "FORCE_COMPLETE_BORROWING", b["id"])
+                            st.success(f"Borrowing {code} closed.")
+                            st.rerun()
+
+                    if st.button("🗑️ Delete Order", key=f"del_bor_{b['id']}", use_container_width=True):
+                        delete_order("BORROWING", b["id"])
+                        log_admin_action(user["id"], "DELETE_ORDER", b["id"], "Deleted borrowing order")
+                        st.warning(f"Borrowing {code} deleted.")
+                        st.rerun()
+
+    # ---------------- TAB 4: MICRO-TASK ORDERS ----------------
+    with adm_tabs[3]:
+        st.markdown("#### Manage Micro-Task Gigs")
+        conn = get_conn()
+        tasks = conn.execute(
+            """SELECT t.*, c.full_name creator_name, h.full_name helper_name 
+               FROM tasks t
+               JOIN users c ON c.id = t.creator_id
+               LEFT JOIN users h ON h.id = t.helper_id
+               ORDER BY t.id DESC"""
+        ).fetchall()
+        conn.close()
+
+        if not tasks:
+            st.info("No micro-tasks currently logged.")
+        for t in tasks:
+            with st.container(border=True):
+                t_c1, t_c2 = st.columns([3, 1.8])
+                code = task_code(t["id"])
+                with t_c1:
+                    st.markdown(f"**Task ID: `{code}` — {t['title']}** — ₹{t['reward']:.0f} | Status: `{t['status']}`")
+                    st.caption(f"Creator: **{t['creator_name']}** | Helper: **{t['helper_name'] or 'Unassigned'}** | Deadline: {t['deadline']}")
+                    st.write(t["description"])
+                with t_c2:
+                    if t["status"] not in ("COMPLETED", "CANCELLED"):
+                        if st.button("Force Complete Task", key=f"force_comp_tsk_{t['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE tasks SET status='COMPLETED' WHERE id=?", (t["id"],))
+                            conn.commit(); conn.close()
+                            update_transaction_status("TASK", t["id"], "RELEASED")
+                            log_admin_action(user["id"], "FORCE_COMPLETE_TASK", t["id"])
+                            st.success(f"Task {code} completed.")
+                            st.rerun()
+
+                    if st.button("🗑️ Delete Task", key=f"del_tsk_{t['id']}", use_container_width=True):
+                        delete_order("TASK", t["id"])
+                        log_admin_action(user["id"], "DELETE_ORDER", t["id"], "Deleted micro-task")
+                        st.warning(f"Task {code} deleted.")
+                        st.rerun()
+
+    # ---------------- TAB 5: STUDENT DIRECTORY ----------------
+    with adm_tabs[4]:
+        st.markdown("#### Student Directory & Account Management")
+        conn = get_conn()
+        students = conn.execute("SELECT * FROM users WHERE role='student' ORDER BY id DESC").fetchall()
+        conn.close()
+
+        search_query = st.text_input("🔍 Search Student (by Name, Student ID, or Email)", placeholder="e.g. STU1001 or Aarav").strip().lower()
+
+        filtered_students = [
+            s for s in students 
+            if search_query in s["full_name"].lower() or search_query in s["student_id"].lower() or search_query in s["email"].lower()
+        ] if search_query else students
+
+        if not filtered_students:
+            st.info("No matching students found.")
+        for s in filtered_students:
+            with st.container(border=True):
+                c_info, c_action = st.columns([3, 1.2])
+                with c_info:
+                    st.markdown(f"**{s['full_name']}** (`{s['student_id']}`) — Trust: **{s['trust_score']}/100** | 🪙 **{s['unicoins']} Coins**")
+                    st.caption(f"Email: {s['email']} | Phone: {s['phone'] or '—'} | Status: `{'🔴 Suspended' if s['is_suspended'] else '🟢 Active'}`")
+                with c_action:
+                    if st.button("Manage Profile →", key=f"view_stu_{s['id']}", use_container_width=True):
+                        st.session_state["admin_selected_student_id"] = s["id"]
+                        st.rerun()
+
+    # ---------------- TAB 6: DISPUTE QUEUE ----------------
+    with adm_tabs[5]:
+        st.markdown("#### Community Safety & Dispute Arbitration")
         conn = get_conn()
         disputes = conn.execute(
             """SELECT d.*, u.full_name reporter_name FROM disputes d
@@ -802,7 +1354,7 @@ def render_admin_workspace(user):
             st.success("No disputes currently open.")
         for d in disputes:
             with st.container(border=True):
-                st.markdown(f"**Dispute #{d['id']} — {d['category']}** on {d['transaction_type']} #{d['transaction_id']}")
+                st.markdown(f"**Dispute #{d['id']} — {d['category']}** on {d['transaction_type']} `{task_code(d['transaction_id'])}`")
                 st.caption(f"Reporter: **{d['reporter_name']}** | Status: `{d['status']}`")
                 st.write(d["description"] or "No description provided.")
 
@@ -813,6 +1365,7 @@ def render_admin_workspace(user):
                         conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE id=?", (now_iso(), d["id"]))
                         conn.commit(); conn.close()
                         update_transaction_status(d["transaction_type"], d["transaction_id"], "RELEASED")
+                        log_admin_action(user["id"], "RESOLVE_DISPUTE", d["id"])
                         st.success("Dispute resolved.")
                         st.rerun()
                     if b2.button("Dismiss & Refund Requester", key=f"rej_{d['id']}"):
@@ -820,41 +1373,69 @@ def render_admin_workspace(user):
                         conn.execute("UPDATE disputes SET status='REJECTED', resolved_at=? WHERE id=?", (now_iso(), d["id"]))
                         conn.commit(); conn.close()
                         update_transaction_status(d["transaction_type"], d["transaction_id"], "CANCELLED")
+                        log_admin_action(user["id"], "REJECT_DISPUTE", d["id"])
                         st.info("Dispute dismissed.")
                         st.rerun()
 
-    with adm_tab2:
+    # ---------------- TAB 7: ESCROW LEDGER ----------------
+    with adm_tabs[6]:
+        st.markdown("#### Global Escrow & Financial Audit Ledger")
         conn = get_conn()
-        students = conn.execute("SELECT id, full_name, email, student_id, trust_score, unicoins, is_suspended FROM users WHERE role='student'").fetchall()
+        txs = conn.execute(
+            """SELECT t.*, p.full_name payer_name, py.full_name payee_name 
+               FROM transactions t
+               LEFT JOIN users p ON p.id = t.payer_id
+               LEFT JOIN users py ON py.id = t.payee_id
+               ORDER BY t.id DESC LIMIT 100"""
+        ).fetchall()
         conn.close()
-        for s in students:
-            c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
-            c1.write(f"**{s['full_name']}** (`{s['student_id']}`)")
-            c2.write(f"Trust: **{s['trust_score']}/100**")
-            c3.write(f"Coins: **{s['unicoins']}**")
-            if s["is_suspended"]:
-                if c4.button("Unsuspend", key=f"unsusp_{s['id']}"):
-                    conn = get_conn()
-                    conn.execute("UPDATE users SET is_suspended=0 WHERE id=?", (s["id"],))
-                    conn.commit(); conn.close(); st.rerun()
-            else:
-                if c4.button("Suspend", key=f"susp_{s['id']}"):
-                    conn = get_conn()
-                    conn.execute("UPDATE users SET is_suspended=1 WHERE id=?", (s["id"],))
-                    conn.commit(); conn.close(); st.rerun()
 
-    with adm_tab3:
-        conn = get_conn()
-        txs = conn.execute("SELECT * FROM transactions ORDER BY id DESC LIMIT 50").fetchall()
-        conn.close()
         for tx in txs:
-            st.write(f"TXN `#{tx['id']}` — ₹{tx['amount']:.0f} | Related: {tx['related_type']} #{tx['related_id']} | Status: `{tx['status']}`")
+            st.markdown(
+                f"**TXN #{tx['id']} — ₹{tx['amount']:.0f}** (`{tx['status']}`) | "
+                f"Payer: {tx['payer_name'] or 'Platform'} ➔ Payee: {tx['payee_name'] or 'Platform'} | "
+                f"Source: {tx['related_type']} `{task_code(tx['related_id'])}`"
+            )
+            st.divider()
+
+    # ---------------- TAB 8: BROADCAST NOTICE ----------------
+    with adm_tabs[7]:
+        st.markdown("#### Campus-Wide Broadcast Center")
+        st.caption("Send notifications directly to all student dashboards.")
+
+        notice_text = st.text_area("Broadcast Announcement", placeholder="e.g. Maintenance scheduled tonight or safety notice.")
+        send_email_copy = st.checkbox("Also attempt email delivery to all registered students", value=False)
+
+        if st.button("📢 Send Broadcast Announcement", type="primary"):
+            if not notice_text.strip():
+                st.error("Please enter a notice message.")
+            else:
+                conn = get_conn()
+                students = conn.execute("SELECT id, email, full_name FROM users WHERE role='student' AND is_suspended=0").fetchall()
+                for s in students:
+                    notify(s["id"], f"📢 ANNOUNCEMENT: {notice_text.strip()}")
+                    if send_email_copy:
+                        send_realtime_email(s["email"], "UNI HELP — Campus Announcement", notice_text.strip())
+                conn.close()
+                log_admin_action(user["id"], "BROADCAST_NOTICE", None, notice_text[:50])
+                st.success(f"Announcement broadcasted to {len(students)} active students!")
 
 # =============================================================================
 # 7. STUDENT WORKSPACE
 # =============================================================================
 
 def render_student_workspace(user):
+    # Platform Paused Check
+    if is_platform_paused():
+        st.markdown("<h2 style='text-align:center;'>⏸️ UNI HELP Is Temporarily Paused</h2>", unsafe_allow_html=True)
+        st.warning("The campus administration has temporarily suspended micro-network activities for scheduled maintenance or campus safety. Please check back shortly.")
+        st.write("")
+        if st.button("Logout", key="paused_logout"):
+            st.session_state["user"] = None
+            st.session_state["auth_mode"] = "student_login"
+            st.rerun()
+        return
+
     top1, top2 = st.columns([4, 1])
     with top1:
         st.markdown(f"### 🎓 UNI HELP")
@@ -902,8 +1483,9 @@ def render_student_workspace(user):
                            VALUES (?, ?, ?, ?, ?, ?, 'CREATED', ?)""",
                         (user["id"], item_name.strip(), desc.strip(), p_loc.strip(), d_loc.strip(), reward, now_iso()),
                     )
+                    new_id = conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]
                     conn.commit(); conn.close()
-                    st.success("Delivery request posted to campus!")
+                    st.success(f"Delivery request posted with Task ID: `{task_code(new_id)}`!")
                     st.rerun()
         else:
             conn = get_conn()
@@ -919,7 +1501,8 @@ def render_student_workspace(user):
                 with st.container(border=True):
                     is_owner = (r["requester_id"] == user["id"])
                     is_helper = (r["helper_id"] == user["id"])
-                    st.markdown(f"**{r['item_name']}** — Reward: **₹{r['reward']:.0f}** | Status: `{r['status']}`")
+                    code = task_code(r["id"])
+                    st.markdown(f"**Task ID: `{code}` — {r['item_name']}** — Reward: **₹{r['reward']:.0f}** | Status: `{r['status']}`")
                     st.caption(f"📍 {r['pickup_location']} ➔ {r['destination']} | Requester: **{r['requester_name']}**")
 
                     if r["status"] == "CREATED" and not is_owner:
@@ -928,15 +1511,15 @@ def render_student_workspace(user):
                             conn.execute("UPDATE requests SET helper_id=?, status='ACCEPTED', accepted_at=? WHERE id=?", (user["id"], now_iso(), r["id"]))
                             conn.commit(); conn.close()
                             create_transaction(r["requester_id"], user["id"], "DELIVERY", r["id"], r["reward"], "HELD")
-                            notify(r["requester_id"], f"{user['full_name']} accepted your delivery request: {r['item_name']}")
+                            notify(r["requester_id"], f"{user['full_name']} accepted your delivery request {code}: {r['item_name']}")
                             st.rerun()
 
                     elif r["status"] == "ACCEPTED":
                         if is_owner:
                             st.info("Helper is assigned. Provide this OTP during item handover:")
                             if st.button("Generate Handover Code", key=f"gen_h_code_{r['id']}"):
-                                code = create_otp(user["id"], "HANDOVER_OTP", r["id"])
-                                st.success(f"Handover Code: **{code}**")
+                                code_otp = create_otp(user["id"], "HANDOVER_OTP", r["id"])
+                                st.success(f"Handover Code: **{code_otp}**")
                         elif is_helper:
                             st.markdown("##### Handover Verification")
                             entered = st.text_input("Enter Handover Code from Requester", key=f"h_code_in_{r['id']}")
@@ -964,8 +1547,8 @@ def render_student_workspace(user):
                             conn.execute("UPDATE requests SET status='COMPLETED', completed_at=? WHERE id=?", (now_iso(), r["id"]))
                             conn.commit(); conn.close()
                             update_transaction_status("DELIVERY", r["id"], "RELEASED")
-                            add_unicoins(r["helper_id"], 20, f"Delivery completion reward for #{r['id']}")
-                            st.success("Delivery completed and reward released!")
+                            add_unicoins(r["helper_id"], 20, f"Delivery completion reward for {code}")
+                            st.success(f"Delivery {code} completed and reward released!")
                             st.rerun()
 
     # 2. Borrowing Hub
@@ -979,16 +1562,18 @@ def render_student_workspace(user):
             st.info("No borrowable items available.")
         for it in items:
             with st.container(border=True):
-                st.markdown(f"**{it['item_name']}** ({it['category']}) — Deposit: **₹{it['deposit']:.0f}**")
+                code = task_code(it["id"])
+                st.markdown(f"**Item ID: `{code}` — {it['item_name']}** ({it['category']}) — Deposit: **₹{it['deposit']:.0f}**")
                 st.caption(f"Owner: **{it['owner_name']}** | Condition: {it['condition']}")
                 if it["owner_id"] != user["id"]:
                     if st.button("Request to Borrow", key=f"req_borrow_{it['id']}"):
                         conn = get_conn()
                         conn.execute("INSERT INTO borrowings (item_id, owner_id, borrower_id, deposit, status, created_at) VALUES (?,?,?,?,'REQUESTED',?)", (it["id"], it["owner_id"], user["id"], it["deposit"], now_iso()))
+                        new_bor_id = conn.execute("SELECT last_insert_rowid() id").fetchone()["id"]
                         conn.execute("UPDATE items SET status='BORROWED' WHERE id=?", (it["id"],))
                         conn.commit(); conn.close()
-                        create_transaction(user["id"], it["owner_id"], "BORROW_DEPOSIT", it["id"], it["deposit"], "HELD")
-                        st.success("Request sent!")
+                        create_transaction(user["id"], it["owner_id"], "BORROW_DEPOSIT", new_bor_id, it["deposit"], "HELD")
+                        st.success(f"Borrowing initiated with Task ID: `{task_code(new_bor_id)}`!")
                         st.rerun()
 
     # 3. Micro-Tasks
@@ -1002,7 +1587,8 @@ def render_student_workspace(user):
             st.info("No micro-tasks currently open.")
         for t in tasks:
             with st.container(border=True):
-                st.markdown(f"**{t['title']}** — ₹{t['reward']:.0f} | Status: `{t['status']}`")
+                code = task_code(t["id"])
+                st.markdown(f"**Task ID: `{code}` — {t['title']}** — ₹{t['reward']:.0f} | Status: `{t['status']}`")
                 st.caption(f"Posted by: **{t['creator_name']}** | Deadline: {t['deadline']}")
                 st.write(t["description"])
                 if t["status"] == "CREATED" and t["creator_id"] != user["id"]:
@@ -1011,6 +1597,7 @@ def render_student_workspace(user):
                         conn.execute("UPDATE tasks SET helper_id=?, status='ACCEPTED' WHERE id=?", (user["id"], t["id"]))
                         conn.commit(); conn.close()
                         create_transaction(t["creator_id"], user["id"], "TASK", t["id"], t["reward"], "HELD")
+                        notify(t["creator_id"], f"{user['full_name']} accepted your micro-task {code}: {t['title']}")
                         st.rerun()
 
     # 4. Wallet
@@ -1032,7 +1619,7 @@ def render_student_workspace(user):
             st.caption("No transactions recorded yet.")
         for tx in tx_logs:
             role = "Paid" if tx["payer_id"] == user["id"] else "Received"
-            st.write(f"• **{role} ₹{tx['amount']:.0f}** for `{tx['related_type']} #{tx['related_id']}` — Status: `{tx['status']}`")
+            st.write(f"• **{role} ₹{tx['amount']:.0f}** for `{tx['related_type']}` `{task_code(tx['related_id'])}` — Status: `{tx['status']}`")
 
     # 5. Dedicated Profile Section
     with tabs[4]:
@@ -1088,7 +1675,7 @@ def render_student_workspace(user):
         st.markdown("#### Raise a Campus Dispute")
         with st.form("raise_dispute_form"):
             t_src = st.selectbox("Service Type", ["DELIVERY", "BORROWING", "TASK"])
-            r_id = st.number_input("Request / Task ID", min_value=1, step=1)
+            r_id = st.number_input("Task Numeric ID (e.g. for UNIH0004 enter 4)", min_value=1, step=1)
             cat = st.selectbox("Category", ["Item Damaged", "No-Show / Abandoned", "Incomplete Task", "Other"])
             exp = st.text_area("Explanation")
             sub_disp = st.form_submit_button("Submit Dispute", type="primary")
@@ -1102,7 +1689,7 @@ def render_student_workspace(user):
                 )
                 conn.commit(); conn.close()
                 update_transaction_status(t_src, r_id, "DISPUTED")
-                st.success("Dispute filed. Escrow funds have been frozen for proctor arbitration.")
+                st.success(f"Dispute filed for {task_code(r_id)}. Escrow funds have been frozen for proctor arbitration.")
                 st.rerun()
 
 # =============================================================================
