@@ -583,29 +583,12 @@ def send_password_reset_email(user_row):
     return sent, msg, raw_token
 
 # =============================================================================
-# 3. QUERIES & SEED DATA
+# 3. QUERIES & SEED DATA (DEMO STUDENTS REMOVED)
 # =============================================================================
 
-DEMO_STUDENTS = [
-    ("Aarav Sharma", "aarav.sharma", "9990001111", "1001"),
-    ("Priya Nair", "priya.nair", "9990002222", "1002"),
-    ("Rohan Mehta", "rohan.mehta", "9990003333", "1003"),
-]
-
 def seed_demo_data():
-    conn = get_conn()
-    for full_name, local, phone, sid in DEMO_STUDENTS:
-        email = f"{local}@gmail.com"
-        existing = conn.execute("SELECT id FROM users WHERE email = ? OR student_id = ?", (email, sid)).fetchone()
-        if not existing:
-            conn.execute(
-                """INSERT INTO users (full_name, email, phone, student_id, password_hash, role,
-                    verified, trust_score, unicoins, created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (full_name, email, phone, sid, generate_password_hash("demo1234"), "student", 1, 65, 50, now_iso()),
-            )
-    conn.commit()
-    conn.close()
+    # No demo students seeded as requested
+    pass
 
 def user_by_id(user_id):
     conn = get_conn()
@@ -693,8 +676,21 @@ def delete_order(order_type, order_id):
     conn.commit()
     conn.close()
 
+def delete_student_account(student_user_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM requests WHERE requester_id = ? OR helper_id = ?", (student_user_id, student_user_id))
+    conn.execute("DELETE FROM borrow_requests WHERE borrower_id = ? OR lender_id = ?", (student_user_id, student_user_id))
+    conn.execute("DELETE FROM tasks WHERE creator_id = ? OR helper_id = ?", (student_user_id, student_user_id))
+    conn.execute("DELETE FROM transactions WHERE payer_id = ? OR payee_id = ?", (student_user_id, student_user_id))
+    conn.execute("DELETE FROM notifications WHERE user_id = ?", (student_user_id,))
+    conn.execute("DELETE FROM disputes WHERE reporter_id = ?", (student_user_id,))
+    conn.execute("DELETE FROM unicoin_transactions WHERE user_id = ?", (student_user_id,))
+    conn.execute("DELETE FROM users WHERE id = ?", (student_user_id,))
+    conn.commit()
+    conn.close()
+
 # =============================================================================
-# 4. CUSTOM HANDSHAKE LOADING ANIMATION (TEXTLESS) & TYPOGRAPHY
+# 4. CUSTOM HANDSHAKE LOADING ANIMATION & PREMIUM TYPOGRAPHY
 # =============================================================================
 
 st.set_page_config(page_title="UNI HELP — Campus Services", page_icon="🎓", layout="centered")
@@ -818,18 +814,18 @@ h1, h2, h3, h4, h5, h6 {
     -webkit-text-fill-color: transparent;
 }
 
-/* --- TEXTLESS HANDSHAKE LOADER --- */
+/* --- TWO-PERSON HANDSHAKE LOADING ANIMATION --- */
 .handshake-loader-container {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 1.5rem;
-    background: rgba(15, 23, 42, 0.4);
-    backdrop-filter: blur(12px);
-    border-radius: 16px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    margin: 1rem 0;
+    padding: 2.5rem;
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(16px);
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    margin: 1.5rem 0;
 }
 
 .handshake-wrapper {
@@ -837,76 +833,86 @@ h1, h2, h3, h4, h5, h6 {
     align-items: center;
     justify-content: center;
     position: relative;
-    width: 120px;
-    height: 50px;
+    width: 140px;
+    height: 70px;
 }
 
 .person {
-    width: 18px;
-    height: 18px;
+    width: 22px;
+    height: 22px;
     background: #60a5fa;
     border-radius: 50%;
     position: absolute;
-    box-shadow: 0 0 12px rgba(96, 165, 250, 0.6);
+    box-shadow: 0 0 15px rgba(96, 165, 250, 0.6);
 }
 
 .person.left {
-    animation: walkLeft 1.4s infinite ease-in-out;
+    animation: walkLeft 1.6s infinite ease-in-out;
 }
 
 .person.right {
-    animation: walkRight 1.4s infinite ease-in-out;
+    animation: walkRight 1.6s infinite ease-in-out;
 }
 
 .handshake-spark {
     position: absolute;
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
     background: #34d399;
     border-radius: 50%;
     opacity: 0;
-    box-shadow: 0 0 12px #34d399;
-    animation: sparkPulse 1.4s infinite ease-in-out;
+    box-shadow: 0 0 15px #34d399;
+    animation: sparkPulse 1.6s infinite ease-in-out;
 }
 
 @keyframes walkLeft {
     0% { left: 0px; transform: translateY(0); }
-    40% { left: 38px; transform: translateY(-4px); }
-    50%, 75% { left: 44px; transform: translateY(0); }
+    40% { left: 45px; transform: translateY(-6px); }
+    50%, 75% { left: 52px; transform: translateY(0); }
     90% { left: 0px; transform: translateY(0); }
     100% { left: 0px; transform: translateY(0); }
 }
 
 @keyframes walkRight {
     0% { right: 0px; transform: translateY(0); }
-    40% { right: 38px; transform: translateY(-4px); }
-    50%, 75% { right: 44px; transform: translateY(0); }
+    40% { right: 45px; transform: translateY(-6px); }
+    50%, 75% { right: 52px; transform: translateY(0); }
     90% { right: 0px; transform: translateY(0); }
     100% { right: 0px; transform: translateY(0); }
 }
 
 @keyframes sparkPulse {
     0%, 45% { transform: scale(0); opacity: 0; }
-    55%, 70% { transform: scale(1.4); opacity: 1; }
+    55%, 70% { transform: scale(1.5); opacity: 1; }
     80%, 100% { transform: scale(0); opacity: 0; }
+}
+
+.loading-text {
+    margin-top: 1rem;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #94a3b8;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
 }
 </style>
 """
 
 st.markdown(CUSTOM_GLOSSY_CSS, unsafe_allow_html=True)
 
-def show_handshake_loader():
-    loader_html = """
+def show_handshake_loader(text="Connecting Campus Peers..."):
+    loader_html = f"""
     <div class="handshake-loader-container">
         <div class="handshake-wrapper">
             <div class="person left"></div>
             <div class="handshake-spark"></div>
             <div class="person right"></div>
         </div>
+        <div class="loading-text">{text}</div>
     </div>
     """
     st.markdown(loader_html, unsafe_allow_html=True)
-    time.sleep(0.35)
+    time.sleep(0.4)
 
 init_db()
 seed_demo_data()
@@ -954,7 +960,7 @@ def render_student_login():
                 send_otp_btn = st.button("Send OTP →", use_container_width=True, type="primary")
             with c_btn2:
                 if st.button("Forgot?", use_container_width=True):
-                    show_handshake_loader()
+                    show_handshake_loader("Loading Recovery...")
                     st.session_state["auth_mode"] = "forgot_password"
                     st.rerun()
 
@@ -964,7 +970,7 @@ def render_student_login():
                 elif not sid.strip().isdigit():
                     st.error("Student ID must contain numbers only.")
                 else:
-                    show_handshake_loader()
+                    show_handshake_loader("Verifying Credentials...")
                     user = user_by_student_id_or_email(sid)
                     if user and check_password_hash(user["password_hash"], pwd):
                         if user["is_suspended"]:
@@ -983,13 +989,13 @@ def render_student_login():
 
             st.divider()
             if st.button("Register New Account", use_container_width=True):
-                show_handshake_loader()
+                show_handshake_loader("Opening Registration...")
                 st.session_state["auth_mode"] = "register"
                 st.rerun()
 
         st.write("")
         if st.button("🛡️ Admin Portal", use_container_width=True):
-            show_handshake_loader()
+            show_handshake_loader("Entering Secure Portal...")
             st.session_state["auth_mode"] = "admin_login"
             st.rerun()
 
@@ -1009,7 +1015,7 @@ def render_student_otp():
         otp_val = st.text_input("6-Digit OTP", max_chars=6, key="login_otp_input")
 
         if st.button("Verify & Log In", use_container_width=True, type="primary"):
-            show_handshake_loader()
+            show_handshake_loader("Handshaking Secure Session...")
             ok, msg = verify_otp(user["id"], "STUDENT_LOGIN_OTP", None, otp_val)
             if ok:
                 st.session_state["user"] = user
@@ -1022,7 +1028,7 @@ def render_student_otp():
                 st.error(msg)
 
         if st.button("← Back to Sign In", use_container_width=True):
-            show_handshake_loader()
+            show_handshake_loader("Returning...")
             st.session_state.pop("pending_student_user", None)
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
@@ -1037,7 +1043,7 @@ def render_forgot_password():
             if not identifier.strip():
                 st.error("Please enter ID or email.")
             else:
-                show_handshake_loader()
+                show_handshake_loader("Dispatched Recovery Link...")
                 user = user_by_student_id_or_email(identifier)
                 if user:
                     sent, msg, raw_token = send_password_reset_email(user)
@@ -1056,7 +1062,7 @@ def render_forgot_password():
 
         if st.button("Proceed to Reset →", use_container_width=True):
             if token_input.strip():
-                show_handshake_loader()
+                show_handshake_loader("Loading...")
                 st.session_state["active_reset_token"] = token_input.strip()
                 st.session_state["auth_mode"] = "reset_password"
                 st.rerun()
@@ -1064,7 +1070,7 @@ def render_forgot_password():
                 st.error("Enter reset token.")
 
         if st.button("← Back", use_container_width=True):
-            show_handshake_loader()
+            show_handshake_loader("Returning...")
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
@@ -1089,7 +1095,7 @@ def render_reset_password():
             elif new_pw != confirm_pw:
                 st.error("Passwords do not match.")
             else:
-                show_handshake_loader()
+                show_handshake_loader("Updating Credentials...")
                 user_id, msg = verify_and_consume_password_reset_token(token)
                 if user_id:
                     conn = get_conn()
@@ -1126,7 +1132,7 @@ def render_registration():
             elif not sid.strip() or not name.strip():
                 st.error("All fields required.")
             else:
-                show_handshake_loader()
+                show_handshake_loader("Registering Peer Account...")
                 conn = get_conn()
                 try:
                     conn.execute(
@@ -1147,7 +1153,7 @@ def render_registration():
                     conn.close()
 
         if st.button("← Back", use_container_width=True):
-            show_handshake_loader()
+            show_handshake_loader("Returning...")
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
@@ -1161,7 +1167,7 @@ def render_admin_login():
             submit_adm = st.form_submit_button("Log In", use_container_width=True, type="primary")
 
         if submit_adm:
-            show_handshake_loader()
+            show_handshake_loader("Authenticating Proctor...")
             conn = get_conn()
             row = conn.execute("SELECT * FROM users WHERE email=? AND role='admin'", (admin_user.strip().lower(),)).fetchone()
             conn.close()
@@ -1172,12 +1178,12 @@ def render_admin_login():
                 st.error("Access denied.")
 
         if st.button("← Back", use_container_width=True):
-            show_handshake_loader()
+            show_handshake_loader("Returning...")
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
 # =============================================================================
-# 6. EXPANDED ADMIN WORKSPACE (WITH REJECTION & OFFICE SUMMONS)
+# 6. EXPANDED ADMIN WORKSPACE (WITH ACCOUNT DELETION)
 # =============================================================================
 
 def render_admin_student_profile(admin_user, student_id):
@@ -1231,25 +1237,22 @@ def render_admin_student_profile(admin_user, student_id):
                     log_admin_action(admin_user["id"], "REVOKE_VERIFICATION", student["id"])
                     st.rerun()
             else:
-                col_a1, col_a2 = st.columns(2)
-                with col_a1:
-                    if st.button("✅ Approve", use_container_width=True):
-                        conn.execute("UPDATE users SET verified=1 WHERE id=?", (student["id"],))
-                        conn.commit()
-                        log_admin_action(admin_user["id"], "GRANT_VERIFICATION", student["id"])
-                        notify(student["id"], "Your student account has been approved and verified by the administration!")
-                        st.success("Student approved & verified.")
-                        st.rerun()
-                with col_a2:
-                    if st.button("❌ Reject & Summon", use_container_width=True):
-                        rej_msg = "🏛️ REGISTRATION REJECTED: Your account verification was rejected. Please report to Proctor Office, Block 34 - Room 102 for physical verification and clarification."
-                        send_realtime_email(student["email"], "UNI HELP — Registration Rejected & Office Summons", f"Hello {student['full_name']},\n\n{rej_msg}\n\n— UNI HELP Proctor Office")
-                        conn.execute("DELETE FROM users WHERE id=?", (student["id"],))
-                        conn.commit()
-                        log_admin_action(admin_user["id"], "REJECT_AND_DELETE_USER", student["id"], "Registration rejected and summoned to office")
-                        st.warning("Registration rejected, notification/email sent, and record removed.")
-                        st.session_state["admin_selected_student_id"] = None
-                        st.rerun()
+                if st.button("Verify & Approve Student Account", use_container_width=True):
+                    conn.execute("UPDATE users SET verified=1 WHERE id=?", (student["id"],))
+                    conn.commit()
+                    log_admin_action(admin_user["id"], "GRANT_VERIFICATION", student["id"])
+                    notify(student["id"], "Your student account has been approved and verified by the administration!")
+                    st.success("Student approved & verified.")
+                    st.rerun()
+
+            st.divider()
+            st.markdown("##### Danger Zone")
+            if st.button("🗑️ Permanently Delete Account", use_container_width=True, type="primary"):
+                delete_student_account(student["id"])
+                log_admin_action(admin_user["id"], "DELETE_STUDENT_ACCOUNT", student["id"], f"Deleted student {student['student_id']}")
+                st.session_state["admin_selected_student_id"] = None
+                st.success("Student account permanently deleted.")
+                st.rerun()
 
     with c2:
         with st.container(border=True):
@@ -1373,7 +1376,7 @@ def render_admin_workspace(user):
     with top2:
         st.write("")
         if st.button("🚪 Logout of Admin Console", use_container_width=True):
-            show_handshake_loader()
+            show_handshake_loader("Logging Out...")
             st.session_state["user"] = None
             st.session_state["admin_selected_student_id"] = None
             st.session_state["auth_mode"] = "student_login"
@@ -1815,28 +1818,15 @@ def render_admin_workspace(user):
                     st.caption(f"Email: {s['email']} | Phone: {s['phone'] or '—'} | Status: `{'🔴 Suspended' if s['is_suspended'] else '🟢 Active'}`")
                 with c_action:
                     if not s["verified"]:
-                        col_btn1, col_btn2 = st.columns(2)
-                        with col_btn1:
-                            if st.button("✅", key=f"appr_btn_{s['id']}", use_container_width=True):
-                                conn = get_conn()
-                                conn.execute("UPDATE users SET verified=1 WHERE id=?", (s["id"],))
-                                conn.commit()
-                                conn.close()
-                                notify(s["id"], "Your student account registration has been approved by admin!")
-                                log_admin_action(user["id"], "APPROVE_ACCOUNT", s["id"], f"Approved account {s['student_id']}")
-                                st.success(f"Approved {s['full_name']}!")
-                                st.rerun()
-                        with col_btn2:
-                            if st.button("❌", key=f"rej_btn_{s['id']}", use_container_width=True):
-                                rej_msg = "🏛️ REGISTRATION REJECTED: Your account verification was rejected. Please report to Proctor Office, Block 34 - Room 102 for physical verification and clarification."
-                                send_realtime_email(s["email"], "UNI HELP — Registration Rejected & Office Summons", f"Hello {s['full_name']},\n\n{rej_msg}\n\n— UNI HELP Proctor Office")
-                                conn = get_conn()
-                                conn.execute("DELETE FROM users WHERE id=?", (s["id"],))
-                                conn.commit()
-                                conn.close()
-                                log_admin_action(user["id"], "REJECT_AND_DELETE_USER", s["id"], "Registration rejected and summoned to office")
-                                st.warning(f"Registration rejected for {s['full_name']}.")
-                                st.rerun()
+                        if st.button("✅ Approve Account", key=f"appr_btn_{s['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE users SET verified=1 WHERE id=?", (s["id"],))
+                            conn.commit()
+                            conn.close()
+                            notify(s["id"], "Your student account registration has been approved by admin!")
+                            log_admin_action(user["id"], "APPROVE_ACCOUNT", s["id"], f"Approved account {s['student_id']}")
+                            st.success(f"Approved {s['full_name']}!")
+                            st.rerun()
                     if st.button("Manage Profile →", key=f"view_stu_{s['id']}", use_container_width=True):
                         st.session_state["admin_selected_student_id"] = s["id"]
                         st.rerun()
@@ -1949,7 +1939,7 @@ def render_student_workspace(user):
     c1, c2 = st.columns([3, 1])
     c1.markdown(f"### 🎓 UNI HELP")
     if c2.button("Logout"):
-        show_handshake_loader()
+        show_handshake_loader("Logging Out...")
         st.session_state["user"] = None
         st.session_state["auth_mode"] = "student_login"
         st.rerun()
@@ -1983,7 +1973,7 @@ def render_student_workspace(user):
                 d = st.text_input("Destination", value="Hostel")
                 rew = st.number_input("Reward (₹)", value=30.0)
                 if st.form_submit_button("Post Request", type="primary"):
-                    show_handshake_loader()
+                    show_handshake_loader("Publishing Request...")
                     conn = get_conn()
                     conn.execute("INSERT INTO requests (requester_id, item_name, description, pickup_location, destination, reward, status, created_at) VALUES (?,?,?,?,?,?,'CREATED',?)",
                                  (user["id"], iname, desc, p, d, rew, now_iso()))
@@ -1999,7 +1989,7 @@ def render_student_workspace(user):
                     st.caption(f"📍 {r['pickup_location']} ➔ {r['destination']} | {estimate_campus_distance(r['pickup_location'])}")
                     if r["status"] == "CREATED" and r["requester_id"] != user["id"]:
                         if st.button("Accept", key=f"ac_d_{r['id']}"):
-                            show_handshake_loader()
+                            show_handshake_loader("Accepting Delivery...")
                             conn2 = get_conn()
                             conn2.execute("UPDATE requests SET helper_id=?, status='ACCEPTED' WHERE id=?", (user["id"], r["id"]))
                             conn2.commit(); conn2.close()
@@ -2019,7 +2009,7 @@ def render_student_workspace(user):
                 rew = st.number_input("Reward (₹)", value=20.0)
                 dep = st.number_input("Deposit (₹)", value=100.0)
                 if st.form_submit_button("Post Borrow Request", type="primary"):
-                    show_handshake_loader()
+                    show_handshake_loader("Posting Request...")
                     conn = get_conn()
                     conn.execute("INSERT INTO borrow_requests (borrower_id, item_name, category, location, description, duration, deposit, reward, status, created_at) VALUES (?,?,'General',?,'',?,?,?,'REQUESTED',?)",
                                  (user["id"], iname, loc, dur, dep, rew, now_iso()))
@@ -2035,7 +2025,7 @@ def render_student_workspace(user):
                     st.caption(f"📍 {b['location']} | {estimate_campus_distance(b['location'])}")
                     if b["status"] == "REQUESTED" and b["borrower_id"] != user["id"]:
                         if st.button("Lend This", key=f"lend_{b['id']}"):
-                            show_handshake_loader()
+                            show_handshake_loader("Accepting Borrow Request...")
                             conn2 = get_conn()
                             conn2.execute("UPDATE borrow_requests SET lender_id=?, status='ACCEPTED' WHERE id=?", (user["id"], b["id"]))
                             conn2.commit(); conn2.close()
@@ -2056,35 +2046,13 @@ def render_student_workspace(user):
         st.metric("UniCoins", f"🪙 {user['unicoins']}")
 
     with tabs[4]:
-        st.markdown(f"#### 👤 {user['full_name']}")
-        fresh_user = user_by_id(user["id"])
-        if fresh_user:
-            user = dict(fresh_user)
-        conn = get_conn()
-        cd = conn.execute("SELECT COUNT(*) c FROM requests WHERE helper_id=? AND status='COMPLETED'", (user["id"],)).fetchone()["c"]
-        ct = conn.execute("SELECT COUNT(*) c FROM tasks WHERE helper_id=? AND status='COMPLETED'", (user["id"],)).fetchone()["c"]
-        ab = conn.execute("SELECT COUNT(*) c FROM borrow_requests WHERE borrower_id=? AND status IN ('ACCEPTED', 'ACTIVE')", (user["id"],)).fetchone()["c"]
-        conn.close()
-
-        with st.container(border=True):
-            st.write(f"**Student ID:** `{user['student_id']}`")
-            st.write(f"**Email:** {user['email']}")
-            st.write(f"**Phone:** {user['phone'] or 'Not provided'}")
-            st.write(f"**Status:** `{'Suspended' if user['is_suspended'] else 'Active'}`")
-
-        c_m1, c_m2 = st.columns(2)
-        c_m1.metric("Trust Score", f"{user['trust_score']}/100")
-        c_m2.metric("UniCoins", f"🪙 {user['unicoins']}")
-
-        st.divider()
-        st.markdown("##### Activity Summary")
-        sc1, sc2, sc3 = st.columns(3)
-        sc1.metric("Deliveries", cd)
-        sc2.metric("Tasks", ct)
-        sc3.metric("Borrows", ab)
+        st.markdown(f"#### {user['full_name']}")
+        st.write(f"**ID:** {user['student_id']}")
+        st.write(f"**Trust Score:** {user['trust_score']}/100")
 
     with tabs[5]:
-        st.markdown("#### Report Dispute")
+        st.markdown("#### Report Dispute & Queries")
+        st.info("For any queries, complaints, or support, please mail us directly at **unihelp.lpu@gmail.com**.")
         with st.form("disp"):
             tid = st.text_input("Task ID (e.g. UNIH0001 or 1)")
             cat = st.selectbox("Category", ["Item Damaged", "No-Show", "Other"])
@@ -2092,7 +2060,7 @@ def render_student_workspace(user):
             if st.form_submit_button("Submit Dispute", type="primary"):
                 pid = parse_task_id(tid)
                 if pid:
-                    show_handshake_loader()
+                    show_handshake_loader("Filing Dispute...")
                     conn = get_conn()
                     conn.execute("INSERT INTO disputes (transaction_type, transaction_id, reporter_id, category, description, status, created_at) VALUES ('DELIVERY', ?, ?, ?, ?, 'OPEN', ?)",
                                  (pid, user["id"], cat, exp, now_iso()))
