@@ -1103,7 +1103,7 @@ def render_admin_login():
             st.rerun()
 
 # =============================================================================
-# 6. EXPANDED ADMIN WORKSPACE WITH SUMMONS & ALERTS
+# 6. EXPANDED ADMIN WORKSPACE WITH SUMMONS & ALERTS (ALERTS TAB FIRST)
 # =============================================================================
 
 def render_admin_student_profile(admin_user, student_id):
@@ -1337,6 +1337,7 @@ def render_admin_workspace(user):
     m4.metric("Admin Alerts", unread_admin_notifs)
     m5.metric("Active Deliveries", active_deliveries)
 
+    # 🔔 ADMIN ALERTS TAB IS PLACED FIRST FOR MAXIMUM UTILITY
     adm_tabs = st.tabs([
         "🔔 Admin Alerts",
         "🔍 Search & Lookup Order",
