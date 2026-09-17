@@ -693,7 +693,7 @@ CUSTOM_GLOSSY_CSS = """
     font-family: 'Inter', -apple-system, sans-serif;
 }
 
-/* Glassmorphism Cards */
+/* Glassmorphism Containers */
 [data-testid="stVerticalBlockBorderWrapper"], .stContainer {
     background: rgba(30, 41, 59, 0.45) !important;
     backdrop-filter: blur(16px) saturate(180%) !important;
@@ -709,12 +709,12 @@ CUSTOM_GLOSSY_CSS = """
     box-shadow: 0 12px 40px 0 rgba(37, 99, 235, 0.2) !important;
 }
 
-/* Glossy Neon Animated Buttons */
+/* Glossy Neon Buttons */
 .stButton > button {
-    background: linear-gradient(135deg, rgba(37, 99, 235, 0.7), rgba(99, 102, 241, 0.8)) !important;
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.75), rgba(99, 102, 241, 0.85)) !important;
     color: #ffffff !important;
     font-weight: 700 !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    border: 1px solid rgba(255, 255, 255, 0.22) !important;
     border-radius: 12px !important;
     padding: 0.55rem 1.25rem !important;
     box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.4), 0 4px 15px rgba(37, 99, 235, 0.35) !important;
@@ -783,7 +783,7 @@ CUSTOM_GLOSSY_CSS = """
     box-shadow: 0 4px 15px rgba(37, 99, 235, 0.35) !important;
 }
 
-/* Metric Cards */
+/* Metric Display Values */
 [data-testid="stMetricValue"] {
     font-size: 1.8rem !important;
     font-weight: 800 !important;
@@ -1329,9 +1329,9 @@ def render_admin_workspace(user):
         "📢 Broadcast Notice"
     ])
 
-    # ---------------- TAB 0: ADMIN NOTIFICATIONS / ALERTS ----------------
+    # ---------------- TAB 0: ADMIN ALERTS & ACTION RESOLUTION ----------------
     with adm_tabs[0]:
-        st.markdown("#### 🔔 System Alerts & Event Inbox")
+        st.markdown("#### 🔔 System Alerts & Immediate Actions")
         conn = get_conn()
         notifs = conn.execute("SELECT * FROM admin_notifications ORDER BY id DESC LIMIT 50").fetchall()
         conn.close()
@@ -1352,6 +1352,71 @@ def render_admin_workspace(user):
                 st.markdown(f"**{icon} [{n['category']}] Ref: `{n['reference_id']}`** — `{badge}`")
                 st.write(n["message"])
                 st.caption(f"Logged at: {n['created_at'][:19].replace('T', ' ')}")
+
+                # Interactive Options inside Admin Alert
+                if n["category"] == "DISPUTE":
+                    parsed_d_id = parse_task_id(n["reference_id"])
+                    act_c1, act_c2, act_c3, act_c4 = st.columns(4)
+                    with act_c1:
+                        if st.button("🔎 Review In Dispute Tab", key=f"alert_rev_{n['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
+                    with act_c2:
+                        if st.button("✅ Resolve & Release Escrow", key=f"alert_res_{n['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE disputes SET status='RESOLVED', resolved_at=? WHERE transaction_id=?", (now_iso(), parsed_d_id))
+                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
+                            conn.commit()
+                            conn.close()
+                            update_transaction_status("DELIVERY", parsed_d_id, "RELEASED")
+                            update_transaction_status("BORROWING", parsed_d_id, "RELEASED")
+                            update_transaction_status("TASK", parsed_d_id, "RELEASED")
+                            st.success(f"Dispute {n['reference_id']} resolved and escrow released.")
+                            st.rerun()
+                    with act_c3:
+                        if st.button("❌ Dismiss & Refund", key=f"alert_rej_{n['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE disputes SET status='REJECTED', resolved_at=? WHERE transaction_id=?", (now_iso(), parsed_d_id))
+                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
+                            conn.commit()
+                            conn.close()
+                            update_transaction_status("DELIVERY", parsed_d_id, "CANCELLED")
+                            update_transaction_status("BORROWING", parsed_d_id, "CANCELLED")
+                            update_transaction_status("TASK", parsed_d_id, "CANCELLED")
+                            st.info(f"Dispute {n['reference_id']} dismissed and refunded.")
+                            st.rerun()
+                    with act_c4:
+                        if st.button("Dismiss Alert", key=f"alert_dism_{n['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
+
+                elif n["category"] == "NEW_ACCOUNT":
+                    act_c1, act_c2 = st.columns(2)
+                    with act_c1:
+                        if st.button("✅ Approve Student Registration", key=f"alert_appr_{n['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE users SET verified=1 WHERE student_id=?", (n["reference_id"],))
+                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
+                            u_target = conn.execute("SELECT id FROM users WHERE student_id=?", (n["reference_id"],)).fetchone()
+                            conn.commit()
+                            conn.close()
+                            if u_target:
+                                notify(u_target["id"], "Your student account registration has been approved by the admin!")
+                            st.success(f"Approved student account {n['reference_id']}!")
+                            st.rerun()
+                    with act_c2:
+                        if st.button("Dismiss Alert", key=f"alert_dism_u_{n['id']}", use_container_width=True):
+                            conn = get_conn()
+                            conn.execute("UPDATE admin_notifications SET is_read=1 WHERE id=?", (n["id"],))
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
 
     # ---------------- TAB 1: INSTANT SEARCH BY TASK ID ----------------
     with adm_tabs[1]:
@@ -2168,40 +2233,70 @@ def render_student_workspace(user):
             stat_c2.metric("Tasks Completed", completed_tasks)
             stat_c3.metric("Active Borrows", active_borrows)
 
-    # 6. Disputes (Direct UNIH Task ID Entry)
+    # 6. Disputes & Filed Reports View
     with tabs[5]:
-        st.markdown("#### Raise a Campus Dispute")
-        st.caption("Enter the Task ID (e.g. `UNIH0004` or simply `4`) to file a dispute directly.")
-        with st.form("raise_dispute_form"):
-            t_src = st.selectbox("Service Type", ["DELIVERY", "BORROWING", "TASK"])
-            raw_task_input = st.text_input("Task ID (e.g. UNIH0004 or 4)", placeholder="UNIH0001", key="disp_task_str")
-            cat = st.selectbox("Category", ["Item Damaged", "No-Show / Abandoned", "Incomplete Task", "Other"])
-            exp = st.text_area("Explanation")
-            sub_disp = st.form_submit_button("Submit Dispute", type="primary")
+        st.markdown("#### ⚠️ Campus Disputes & Reports")
 
-            if sub_disp:
-                parsed_id = parse_task_id(raw_task_input)
-                if not parsed_id:
-                    st.error("Please enter a valid Task ID (e.g. UNIH0004 or 4).")
-                elif not exp.strip():
-                    st.error("Please provide a description of the issue.")
-                else:
-                    conn = get_conn()
-                    conn.execute(
-                        """INSERT INTO disputes (transaction_type, transaction_id, reporter_id, category, description, status, created_at)
-                           VALUES (?, ?, ?, ?, ?, 'OPEN', ?)""",
-                        (t_src, parsed_id, user["id"], cat, exp.strip(), now_iso()),
-                    )
-                    conn.commit()
-                    conn.close()
-                    update_transaction_status(t_src, parsed_id, "DISPUTED")
-                    notify_admin(
-                        "DISPUTE",
-                        task_code(parsed_id),
-                        f"Student {user['full_name']} filed a dispute on {t_src} {task_code(parsed_id)}: '{cat}'"
-                    )
-                    st.success(f"Dispute filed for {task_code(parsed_id)}. Administration notified and escrow frozen.")
-                    st.rerun()
+        # Two sub-views: View Existing Reports & File a New Dispute
+        disp_mode = st.radio("Dispute View", ["My Filed Reports & Status", "File a New Dispute"], horizontal=True, label_visibility="collapsed")
+
+        if disp_mode == "My Filed Reports & Status":
+            conn = get_conn()
+            my_disputes = conn.execute(
+                """SELECT * FROM disputes WHERE reporter_id=? ORDER BY id DESC""", (user["id"],)
+            ).fetchall()
+            conn.close()
+
+            if not my_disputes:
+                st.info("You have not filed any disputes.")
+            else:
+                for d in my_disputes:
+                    with st.container(border=True):
+                        st_color = "🟡" if d["status"] in ("OPEN", "UNDER_REVIEW") else ("🟢" if d["status"] == "RESOLVED" else "🔴")
+                        st.markdown(f"**{st_color} Report #{d['id']}: {d['category']}** on `{d['transaction_type']}` `{task_code(d['transaction_id'])}`")
+                        st.caption(f"Status: **{d['status']}** | Filed: {d['created_at'][:19].replace('T', ' ')}")
+                        st.write(d["description"])
+                        if d["status"] == "OPEN":
+                            st.caption("⏳ Awaiting administrative investigation. Escrow is safely frozen.")
+                        elif d["status"] == "UNDER_REVIEW":
+                            st.caption("🔍 Currently being reviewed by the university proctor.")
+                        elif d["status"] == "RESOLVED":
+                            st.caption("✅ Resolved by administration. Funds have been released.")
+                        elif d["status"] == "REJECTED":
+                            st.caption("❌ Claim dismissed by administration. Requester refunded.")
+
+        else:
+            with st.form("raise_dispute_form"):
+                st.markdown("##### Submit Issue Report to Proctor")
+                t_src = st.selectbox("Service Type", ["DELIVERY", "BORROWING", "TASK"])
+                raw_task_input = st.text_input("Task ID (e.g. UNIH0004 or 4)", placeholder="UNIH0001", key="disp_task_str")
+                cat = st.selectbox("Category", ["Item Damaged", "No-Show / Abandoned", "Incomplete Task", "Other"])
+                exp = st.text_area("Explanation")
+                sub_disp = st.form_submit_button("Submit Dispute", type="primary")
+
+                if sub_disp:
+                    parsed_id = parse_task_id(raw_task_input)
+                    if not parsed_id:
+                        st.error("Please enter a valid Task ID (e.g. UNIH0004 or 4).")
+                    elif not exp.strip():
+                        st.error("Please provide a description of the issue.")
+                    else:
+                        conn = get_conn()
+                        conn.execute(
+                            """INSERT INTO disputes (transaction_type, transaction_id, reporter_id, category, description, status, created_at)
+                               VALUES (?, ?, ?, ?, ?, 'OPEN', ?)""",
+                            (t_src, parsed_id, user["id"], cat, exp.strip(), now_iso()),
+                        )
+                        conn.commit()
+                        conn.close()
+                        update_transaction_status(t_src, parsed_id, "DISPUTED")
+                        notify_admin(
+                            "DISPUTE",
+                            task_code(parsed_id),
+                            f"Student {user['full_name']} filed a dispute on {t_src} {task_code(parsed_id)}: '{cat}'"
+                        )
+                        st.success(f"Dispute filed for {task_code(parsed_id)}. Administration notified and escrow frozen.")
+                        st.rerun()
 
 # =============================================================================
 # 8. MAIN CONTROLLER
