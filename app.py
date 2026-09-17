@@ -105,6 +105,21 @@ CAMPUS_LOCATION_MAP = {
     "Block 57A": ["Room 304", "Room 402A", "Room 502"]
 }
 
+def estimate_campus_distance(loc_str):
+    try:
+        if not loc_str or "-" not in loc_str:
+            return "📍 ~300m (3 mins walk)"
+        block_part = loc_str.split("-")[0].strip()
+        num_str = "".join(filter(str.isdigit, block_part))
+        if not num_str:
+            return "📍 ~400m (4 mins walk)"
+        b_num = int(num_str)
+        meters = 150 + (b_num * 15) % 450
+        mins = max(2, round(meters / 100))
+        return f"📍 ~{meters}m ({mins} mins walking distance)"
+    except Exception:
+        return "📍 ~350m (4 mins walk)"
+
 def get_config_val(key, default=""):
     try:
         val = st.secrets.get(key, os.getenv(key, default))
@@ -325,7 +340,7 @@ def init_db():
     cols = {row[1] for row in conn.execute("PRAGMA table_info(borrow_requests)").fetchall()}
     if "location" not in cols:
         try:
-            conn.execute("ALTER TABLE borrow_requests ADD COLUMN location TEXT DEFAULT 'Block 34 - Room 301'")
+            conn.execute("ALTER TABLE borrow_requests ADD COLUMN location TEXT DEFAULT '34 - 301'")
         except Exception:
             pass
 
@@ -339,7 +354,7 @@ def init_db():
                 "Platform Admin",
                 ADMIN_EMAIL,
                 "",
-                "ADMIN-0",
+                "0",
                 generate_password_hash(ADMIN_PASSWORD),
                 "admin",
                 1,
@@ -572,9 +587,9 @@ def send_password_reset_email(user_row):
 # =============================================================================
 
 DEMO_STUDENTS = [
-    ("Aarav Sharma", "aarav.sharma", "9990001111", "STU1001"),
-    ("Priya Nair", "priya.nair", "9990002222", "STU1002"),
-    ("Rohan Mehta", "rohan.mehta", "9990003333", "STU1003"),
+    ("Aarav Sharma", "aarav.sharma", "9990001111", "1001"),
+    ("Priya Nair", "priya.nair", "9990002222", "1002"),
+    ("Rohan Mehta", "rohan.mehta", "9990003333", "1003"),
 ]
 
 def seed_demo_data():
@@ -822,7 +837,7 @@ def show_simulated_dispatch_box():
             st.code(body, language="text")
 
 # =============================================================================
-# 5. AUTHENTICATION SCREENS
+# 5. AUTHENTICATION SCREENS (NO EXAMPLES / PURE NUMERIC STUDENT ID)
 # =============================================================================
 
 def render_student_login():
@@ -836,8 +851,8 @@ def render_student_login():
             st.markdown("##### 🔐 Student Sign In")
             st.caption("Step 1 of 2: Enter credentials to receive an email OTP")
 
-            sid = st.text_input("Student ID", placeholder="Enter your Student ID (e.g., STU1001)", key="login_sid")
-            pwd = st.text_input("Password", type="password", placeholder="••••••••", key="login_pwd")
+            sid = st.text_input("Student ID (Numbers Only)", key="login_sid")
+            pwd = st.text_input("Password", type="password", key="login_pwd")
 
             c_btn1, c_btn2 = st.columns([1.6, 1])
             with c_btn1:
@@ -850,6 +865,8 @@ def render_student_login():
             if send_otp_btn:
                 if not sid.strip() or not pwd:
                     st.error("Please provide both Student ID and Password.")
+                elif not sid.strip().isdigit():
+                    st.error("Student ID must contain numbers only.")
                 else:
                     user = user_by_student_id_or_email(sid)
                     if user and check_password_hash(user["password_hash"], pwd):
@@ -894,7 +911,7 @@ def render_student_otp():
 
         show_simulated_dispatch_box()
 
-        otp_val = st.text_input("Enter 6-Digit Email OTP", max_chars=6, placeholder="123456", key="login_otp_input")
+        otp_val = st.text_input("Enter 6-Digit Email OTP", max_chars=6, key="login_otp_input")
 
         c1, c2 = st.columns([1.5, 1])
         with c1:
@@ -925,9 +942,9 @@ def render_forgot_password():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.markdown("### 🔑 Recover Account Password")
-        st.caption("Enter your Student ID or registered university email. UNI HELP will send a secure password reset link to your email address.")
+        st.caption("Enter your numeric Student ID or registered university email. UNI HELP will send a secure password reset link to your email address.")
 
-        identifier = st.text_input("Student ID or University Email", placeholder="e.g. STU1001 or aarav.sharma@student.university.edu")
+        identifier = st.text_input("Student ID (Numbers Only) or University Email")
 
         if st.button("Send Reset Link to Email", use_container_width=True, type="primary"):
             if not identifier.strip():
@@ -952,7 +969,7 @@ def render_forgot_password():
         st.caption("Click below or paste your token to change your password immediately:")
 
         recent_tok = st.session_state.get("recent_generated_reset_token", "")
-        token_input = st.text_input("Reset Token", value=recent_tok, placeholder="Paste reset token here")
+        token_input = st.text_input("Reset Token", value=recent_tok)
 
         if st.button("Proceed to Password Reset →", use_container_width=True):
             if token_input.strip():
@@ -980,8 +997,8 @@ def render_reset_password():
                 st.rerun()
             return
 
-        new_pw = st.text_input("New Password", type="password", placeholder="At least 6 characters")
-        confirm_pw = st.text_input("Confirm New Password", type="password", placeholder="Repeat new password")
+        new_pw = st.text_input("New Password", type="password")
+        confirm_pw = st.text_input("Confirm New Password", type="password")
 
         if st.button("Update Password & Continue", use_container_width=True, type="primary"):
             if len(new_pw) < 6:
@@ -1017,16 +1034,18 @@ def render_registration():
         st.caption("Join your verified campus network.")
 
         with st.form("reg_form"):
-            name = st.text_input("Full Name", placeholder="Ananya Patel")
-            sid = st.text_input("Student ID (Unique)", placeholder="STU1004")
-            email = st.text_input("University Email", placeholder="ananya.p@student.university.edu")
-            phone = st.text_input("Phone Number", placeholder="9876543210")
+            name = st.text_input("Full Name")
+            sid = st.text_input("Student ID (Numbers Only)")
+            email = st.text_input("University Email")
+            phone = st.text_input("Phone Number")
             pw1 = st.text_input("Password", type="password")
             pw2 = st.text_input("Confirm Password", type="password")
             submitted = st.form_submit_button("Register & Submit for Approval", use_container_width=True, type="primary")
 
         if submitted:
-            if not email.endswith(UNIVERSITY_EMAIL_DOMAIN):
+            if not sid.strip().isdigit():
+                st.error("Student ID must contain numbers only (no alphabets).")
+            elif not email.endswith(UNIVERSITY_EMAIL_DOMAIN):
                 st.error(f"Email domain must match: {UNIVERSITY_EMAIL_DOMAIN}")
             elif len(pw1) < 6 or pw1 != pw2:
                 st.error("Passwords must match and be at least 6 characters.")
@@ -1068,17 +1087,8 @@ def render_admin_login():
         st.write("")
 
         with st.form("admin_login_box"):
-            admin_user = st.text_input(
-                "Administrative Email", 
-                placeholder="Enter admin email (e.g., admin@unihelp.local)", 
-                key="admin_email_field"
-            )
-            admin_pwd = st.text_input(
-                "Admin Security Password", 
-                type="password", 
-                placeholder="Enter admin password", 
-                key="admin_pwd_field"
-            )
+            admin_user = st.text_input("Administrative Email", key="admin_email_field")
+            admin_pwd = st.text_input("Admin Security Password", type="password", key="admin_pwd_field")
             submit_adm = st.form_submit_button("Enter Administration Workspace", use_container_width=True, type="primary")
 
         if submit_adm:
@@ -1237,7 +1247,7 @@ def render_admin_student_profile(admin_user, student_id):
                FROM borrow_requests b
                JOIN users bor ON bor.id = b.borrower_id
                LEFT JOIN users len ON len.id = b.lender_id
-               WHERE b.borrower_id = ? OR b.lender_id = ? ORDER BY r.id DESC""", # Note: fixed query parameter error here
+               WHERE b.borrower_id = ? OR b.lender_id = ? ORDER BY b.id DESC""",
             (student["id"], student["id"])
         ).fetchall()
         if not borrows:
@@ -1442,7 +1452,7 @@ def render_admin_workspace(user):
         st.markdown("#### 🔍 Instant Order Search & Control")
         st.caption("Look up any delivery, borrow request, or task directly by entering its UNIH Task ID (e.g., `UNIH0004` or `4`).")
 
-        search_id_input = st.text_input("Enter Task ID", placeholder="e.g. UNIH0001 or 1").strip()
+        search_id_input = st.text_input("Enter Task ID", placeholder="UNIH0001", key="search_task_input_box").strip()
         parsed_id = parse_task_id(search_id_input) if search_id_input else None
 
         if parsed_id:
@@ -1710,7 +1720,7 @@ def render_admin_workspace(user):
         students = conn.execute("SELECT * FROM users WHERE role='student' ORDER BY verified ASC, id DESC").fetchall()
         conn.close()
 
-        search_query = st.text_input("🔍 Search Student (by Name, Student ID, or Email)", placeholder="e.g. STU1001 or Aarav").strip().lower()
+        search_query = st.text_input("🔍 Search Student (by Name, Student ID, or Email)", placeholder="Search student...", key="admin_stud_search_box").strip().lower()
 
         filtered_students = [
             s for s in students 
@@ -1741,7 +1751,7 @@ def render_admin_workspace(user):
                         st.session_state["admin_selected_student_id"] = s["id"]
                         st.rerun()
 
-    # 6. Dispute Queue (With Inline Office Summons Action)
+    # 6. Dispute Queue
     with adm_tabs[6]:
         st.markdown("#### Community Safety & Dispute Arbitration")
         conn = get_conn()
@@ -1778,7 +1788,7 @@ def render_admin_workspace(user):
                         st.info("Dispute dismissed.")
                         st.rerun()
 
-                # --- ADDED: SUMMON COMPLAINTER FOR CLARIFICATION ---
+                # --- SUMMON COMPLAINTER FOR CLARIFICATION ---
                 with st.expander(f"🏛️ Summon {d['reporter_name']} to Office for Clarification"):
                     s_loc = st.text_input("Office Location", value="Proctor Office, Block 34 - Room 102", key=f"d_loc_{d['id']}")
                     s_time = st.text_input("Date & Time", value="Tomorrow at 3:00 PM", key=f"d_time_{d['id']}")
@@ -1862,6 +1872,24 @@ def render_student_workspace(user):
             st.session_state["auth_mode"] = "student_login"
             st.rerun()
 
+    # --- STUDENT NOTIFICATION BADGE & INBOX ---
+    conn = get_conn()
+    unread_notifs = conn.execute("SELECT * FROM notifications WHERE user_id=? AND is_read=0 ORDER BY id DESC", (user["id"],)).fetchall()
+    student_notifs = conn.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 15", (user["id"],)).fetchall()
+    conn.close()
+
+    if unread_notifs:
+        with st.container(border=True):
+            st.markdown(f"🔔 **You have {len(unread_notifs)} unread campus notification(s)!**")
+            for un in unread_notifs[:3]:
+                st.write(f"• {un['message']}")
+            if st.button("Mark All Notifications as Read", key="mark_read_btn"):
+                conn = get_conn()
+                conn.execute("UPDATE notifications SET is_read=1 WHERE user_id=?", (user["id"],))
+                conn.commit()
+                conn.close()
+                st.rerun()
+
     st.write("")
 
     tabs = st.tabs([
@@ -1870,7 +1898,8 @@ def render_student_workspace(user):
         "🛠 Micro-Tasks", 
         "💰 UniCoins & Wallet", 
         "👤 My Profile", 
-        "⚠️ Report Dispute"
+        "⚠️ Report Dispute",
+        "🔔 Notifications"
     ])
 
     # 1. Delivery Hub
@@ -1914,8 +1943,9 @@ def render_student_workspace(user):
                     is_owner = (r["requester_id"] == user["id"])
                     is_helper = (r["helper_id"] == user["id"])
                     code = task_code(r["id"])
+                    dist_badge = estimate_campus_distance(r["pickup_location"])
                     st.markdown(f"**Task ID: `{code}` — {r['item_name']}** — Reward: **₹{r['reward']:.0f}** | Status: `{r['status']}`")
-                    st.caption(f"📍 {r['pickup_location']} ➔ {r['destination']} | Requester: **{r['requester_name']}**")
+                    st.caption(f"📍 {r['pickup_location']} ➔ {r['destination']} | {dist_badge} | Requester: **{r['requester_name']}**")
 
                     if r["status"] == "CREATED" and not is_owner:
                         if st.button("Accept Delivery", key=f"acc_d_{r['id']}"):
@@ -2016,10 +2046,10 @@ def render_student_workspace(user):
             st.info(f"📍 Request will be pinned to: **{structured_location}**")
 
             with st.form("new_borrow_request_form"):
-                it_name = st.text_input("What item do you need?", placeholder="e.g. Casio Scientific Calculator FX-991EX")
+                it_name = st.text_input("What item do you need?")
                 cat = st.selectbox("Category", ["Electronics & Chargers", "Books & Study Material", "Lab Equipment", "Sports Gear", "Other"])
-                dur = st.text_input("Duration Needed", placeholder="e.g. 2 hours for exam / until 5 PM")
-                desc = st.text_area("Additional Notes / Bench / Seat details (Optional)", placeholder="e.g. Sitting on the 3rd row near the door")
+                dur = st.text_input("Duration Needed")
+                desc = st.text_area("Additional Notes / Bench / Seat details (Optional)")
                 c1, c2 = st.columns(2)
                 rew = c1.number_input("Reward offered to lender (₹)", min_value=0.0, value=25.0, step=5.0)
                 dep = c2.number_input("Security deposit you can provide (₹)", min_value=0.0, value=100.0, step=25.0)
@@ -2057,9 +2087,10 @@ def render_student_workspace(user):
                     code = task_code(b["id"])
                     is_borrower = (b["borrower_id"] == user["id"])
                     is_lender = (b["lender_id"] == user["id"])
+                    dist_badge = estimate_campus_distance(b["location"])
 
                     st.markdown(f"**Task ID: `{code}` — {b['item_name']}** ({b['category']}) | Status: `{b['status']}`")
-                    st.markdown(f"📍 **Location:** `{b['location']}`")
+                    st.markdown(f"📍 **Location:** `{b['location']}` | {dist_badge}")
                     st.caption(f"Borrower: **{b['borrower_name']}** | Lender: **{b['lender_name'] or 'Awaiting Lender'}**")
                     st.write(f"⏱️ **Duration:** {b['duration']} | 💰 **Reward:** ₹{b['reward']:.0f} | 🛡️ **Deposit:** ₹{b['deposit']:.0f}")
                     if b["description"]:
@@ -2299,7 +2330,7 @@ def render_student_workspace(user):
             with st.form("raise_dispute_form"):
                 st.markdown("##### Submit Issue Report to Proctor")
                 t_src = st.selectbox("Service Type", ["DELIVERY", "BORROWING", "TASK"])
-                raw_task_input = st.text_input("Task ID (e.g. UNIH0004 or 4)", placeholder="UNIH0001", key="disp_task_str")
+                raw_task_input = st.text_input("Task ID (e.g. UNIH0004 or 4)", key="disp_task_str")
                 cat = st.selectbox("Category", ["Item Damaged", "No-Show / Abandoned", "Incomplete Task", "Other"])
                 exp = st.text_area("Explanation")
                 sub_disp = st.form_submit_button("Submit Dispute", type="primary")
@@ -2327,6 +2358,29 @@ def render_student_workspace(user):
                         )
                         st.success(f"Dispute filed for {task_code(parsed_id)}. Administration notified and escrow frozen.")
                         st.rerun()
+
+    # 7. Student Notifications Inbox
+    with tabs[6]:
+        st.markdown("#### 🔔 Student Notifications & Official Summons")
+        conn = get_conn()
+        student_notifs = conn.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC", (user["id"],)).fetchall()
+        conn.close()
+
+        if not student_notifs:
+            st.info("No notifications in your inbox.")
+        for sn in student_notifs:
+            with st.container(border=True):
+                read_badge = "🔴 UNREAD" if not sn["is_read"] else "⚪ Read"
+                st.markdown(f"**Campus Notification** — `{read_badge}`")
+                st.write(sn["message"])
+                st.caption(f"Time: {sn['created_at'][:19].replace('T', ' ')}")
+
+        if student_notifs and st.button("Mark All As Read", key="stud_mark_all_read"):
+            conn = get_conn()
+            conn.execute("UPDATE notifications SET is_read=1 WHERE user_id=?", (user["id"],))
+            conn.commit()
+            conn.close()
+            st.rerun()
 
 # =============================================================================
 # 8. MAIN CONTROLLER
